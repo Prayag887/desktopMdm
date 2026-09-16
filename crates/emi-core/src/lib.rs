@@ -1,5 +1,7 @@
 //! Dependency-light local EMI plan and desktop device-health types.
 
+pub mod recovery;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
