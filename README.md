@@ -22,7 +22,7 @@ Open a device from the dashboard to send a payment reminder, set a matching 4–
 
 ### Socket delivery and offline recovery
 
-Use agent version 0.4.0 or later for socket delivery; existing 0.3.0 agents still work through their polling API. Re-run the installer with the updated release on existing PCs. The same server URL and enrollment are reused; no extra inbound PC ports are needed.
+Use agent version 0.4.1 or later for socket delivery; existing 0.3.0 agents still work through their polling API. Re-run the installer with the updated release on existing PCs. The same server URL and enrollment are reused; no extra inbound PC ports are needed.
 
 The socket endpoint is `/api/v1/devices/{id}/socket`. HTTPS server URLs become `wss://` with certificate verification. Configure the reverse proxy to forward WebSocket Upgrade/Connection headers and preserve Authorization and Host; use a read timeout over 45 seconds. Socket authentication uses the per-device bearer token in a header, never a query string. Plain HTTP/WS is only for local development.
 

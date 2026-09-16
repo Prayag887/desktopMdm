@@ -416,7 +416,6 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
             STOP_REQUESTED.store(true, Ordering::Relaxed);
             ServiceControlHandlerResult::NoError
         }
-        ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
         ServiceControl::PowerEvent(
             PowerEventParam::ResumeAutomatic
             | PowerEventParam::ResumeSuspend
@@ -425,7 +424,9 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
             RESUME_REQUESTED.store(true, Ordering::Relaxed);
             ServiceControlHandlerResult::NoError
         }
-        ServiceControl::PowerEvent(_) => ServiceControlHandlerResult::NoError,
+        ServiceControl::Interrogate | ServiceControl::PowerEvent(_) => {
+            ServiceControlHandlerResult::NoError
+        }
         _ => ServiceControlHandlerResult::NotImplemented,
     };
     let Ok(handle) = service_control_handler::register("EmiDeviceAgent", handler) else {
