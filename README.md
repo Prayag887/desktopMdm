@@ -27,6 +27,15 @@ cp .env.example .env
 docker compose up --build
 ```
 
+For a server deployment, copy `.env.example` to `.env`, replace both secrets, and run:
+
+```sh
+docker compose up -d --build
+docker compose ps
+```
+
+The production image runs as an unprivileged user on a distroless Debian base, drops Linux capabilities, uses a read-only root filesystem, persists only `/data`, handles `SIGTERM`, and includes a shell-free health check. Rebuilds reuse BuildKit caches for Cargo dependencies and compiled artifacts.
+
 Open `http://localhost:3000` and sign in as `admin` with `ADMIN_PASSWORD`.
 
 For local Rust development:
@@ -56,4 +65,3 @@ git push origin main --tags
 ```
 
 GitHub Actions builds `emi-device-agent.exe`, packages the scripts, uploads the artifact, and creates the release. Production distribution should add Authenticode signing before public rollout.
-

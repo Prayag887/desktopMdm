@@ -6,6 +6,13 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
       ENROLLMENT_KEY: ${ENROLLMENT_KEY:?set ENROLLMENT_KEY}
     volumes: ["emi-data:/data"]
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 15s
     restart: unless-stopped
 volumes:
   emi-data:
