@@ -1,6 +1,6 @@
 # EMI Device Control
 
-A small Rust monorepo for consent-based management of Windows devices sold on installment plans. It includes an Axum + HTMX admin control plane, a SQLite data store, and a Windows service agent.
+A small Rust monorepo for consent-based management of Windows devices sold on installment plans. It includes an Axum + HTMX admin control plane, a SQLite data store, a Windows service agent, and a native Rust desktop UI.
 
 ## What works
 
@@ -11,6 +11,7 @@ A small Rust monorepo for consent-based management of Windows devices sold on in
 - Device health check-ins (OS, disk, Secure Boot, WinGet, OEM detection)
 - Payment reminders delivered to the logged-in Windows session
 - Windows service installation and official WinGet bootstrap
+- Native `egui`/`eframe` Windows status UI installed for all user sessions
 - Tag-driven Windows builds and GitHub releases
 
 ## Safety boundaries
@@ -36,6 +37,10 @@ docker compose ps
 
 The production image runs as an unprivileged user on a distroless Debian base, drops Linux capabilities, uses a read-only root filesystem, persists only `/data`, handles `SIGTERM`, and includes a shell-free health check. Rebuilds reuse BuildKit caches for Cargo dependencies and compiled artifacts.
 
+### Server sizing
+
+Do not plan a Docker deployment around a 100 MB RAM or 100 MB disk limit. The control-plane process is lightweight, but the Docker daemon, unpacked image layers, SQLite data, and logs need headroom. Use at least 256 MB RAM and 500 MB free disk for a very small installation; 512 MB RAM and 1 GB free disk is the recommended practical minimum.
+
 Open `http://localhost:3000` and sign in as `admin` with `ADMIN_PASSWORD`.
 
 For local Rust development:
@@ -53,7 +58,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\install.ps1 -Server 'https://mdm.example.com' -EnrollmentKey 'one-time-or-rotated-key'
 ```
 
-The installer copies the signed executable to Program Files, bootstraps WinGet if needed, enrolls the machine, and registers an automatic Windows service. Put the control plane behind TLS before enrolling real devices.
+The installer copies the service and UI executables to Program Files, bootstraps WinGet if needed, enrolls the machine, registers an automatic Windows service, installs a common Startup shortcut, and opens the UI. The service remains active after the window is closed. Put the control plane behind TLS before enrolling real devices.
 
 ## Release
 
