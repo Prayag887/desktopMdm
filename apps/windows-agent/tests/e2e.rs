@@ -297,7 +297,7 @@ async fn a_single_check_in_reports_health_and_drains_the_command_queue() {
         .await
         .expect("detail body");
     assert!(
-        detail.contains("agent_version"),
+        detail.contains("Storage free") && detail.contains(env!("CARGO_PKG_VERSION")),
         "the check-in must have stored a health document: {detail}"
     );
 
@@ -434,4 +434,82 @@ async fn bootstrap_is_refused_off_windows() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_pin_and_maintenance_commands_change_real_agent_state() {
+    let server = ControlPlane::start().await;
+    let home = AgentHome::new("policy");
+    let (device_id, token) = enrolled(&server, &home, "SER-E2E-POLICY");
+    let client = admin_client();
+    client
+        .post(format!(
+            "{}/devices/{device_id}/commands/pin",
+            server.base_url
+        ))
+        .header("authorization", admin_header())
+        .form(&[("pin", "294817"), ("confirm_pin", "294817")])
+        .send()
+        .await
+        .expect("queue PIN")
+        .error_for_status()
+        .expect("PIN accepted");
+    let output = home
+        .agent()
+        .args(["run", "--once"])
+        .output()
+        .expect("run agent");
+    assert!(output.status.success(), "{}", describe(&output));
+    let state_directory = home
+        .config_path()
+        .parent()
+        .expect("state directory")
+        .to_path_buf();
+    let verifier =
+        fs::read_to_string(state_directory.join("managed-pin.verifier")).expect("PIN applied");
+    assert!(verifier.starts_with("$argon2id$"));
+    assert!(!verifier.contains("294817"));
+    let public_config =
+        fs::read_to_string(state_directory.join("ui-config.json")).expect("UI config");
+    assert!(
+        !public_config.contains(&token),
+        "the desktop config must not expose the agent token"
+    );
+    client
+        .post(format!(
+            "{}/devices/{device_id}/management",
+            server.base_url
+        ))
+        .header("authorization", admin_header())
+        .form(&[("enabled", "false")])
+        .send()
+        .await
+        .expect("queue maintenance")
+        .error_for_status()
+        .expect("maintenance accepted");
+    let output = home
+        .agent()
+        .args(["run", "--once"])
+        .output()
+        .expect("run agent");
+    assert!(output.status.success(), "{}", describe(&output));
+    assert_eq!(
+        fs::read_to_string(state_directory.join("management.enabled")).expect("mode applied"),
+        "0"
+    );
+    assert!(!state_directory.join("managed-pin.verifier").exists());
+    let remaining = client
+        .get(format!(
+            "{}/api/v1/devices/{device_id}/commands",
+            server.base_url
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .expect("poll commands")
+        .json::<serde_json::Value>()
+        .await
+        .expect("commands");
+    assert_eq!(remaining, serde_json::json!([]));
+    server.stop();
 }

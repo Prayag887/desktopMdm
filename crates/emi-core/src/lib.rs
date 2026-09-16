@@ -7,6 +7,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(try_from = "EmiPlanWire")]
 pub struct EmiPlan {
     pub device_id: Uuid,
     pub currency: String,
@@ -14,6 +15,32 @@ pub struct EmiPlan {
     pub installment_amount: Decimal,
     pub period_count: u16,
     pub periods: Vec<PaymentPeriod>,
+}
+
+#[derive(Deserialize)]
+struct EmiPlanWire {
+    device_id: Uuid,
+    currency: String,
+    #[serde(with = "rust_decimal::serde::str")]
+    installment_amount: Decimal,
+    period_count: u16,
+    periods: Vec<PaymentPeriod>,
+}
+
+impl TryFrom<EmiPlanWire> for EmiPlan {
+    type Error = DomainError;
+
+    fn try_from(wire: EmiPlanWire) -> Result<Self, Self::Error> {
+        if usize::from(wire.period_count) != wire.periods.len() {
+            return Err(DomainError::InvalidPeriodCount);
+        }
+        Self::new(
+            wire.device_id,
+            wire.currency,
+            wire.installment_amount,
+            wire.periods,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -318,6 +345,7 @@ mod tests {
             secure_boot: Some(true),
             winget_available: false,
             bios_provider: BiosProvider::Lenovo,
+            management_enabled: true,
             observed_at: DateTime::parse_from_rfc3339("2026-09-16T10:00:00Z")
                 .expect("valid timestamp")
                 .with_timezone(&Utc),
@@ -355,6 +383,10 @@ mod tests {
             (
                 DeviceCommand::ClearManagedRestrictions,
                 r#"{"type":"clear_managed_restrictions"}"#,
+            ),
+            (
+                DeviceCommand::SetManagementEnabled { enabled: false },
+                r#"{"type":"set_management_enabled","parameters":{"enabled":false}}"#,
             ),
         ];
 

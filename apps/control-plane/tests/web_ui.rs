@@ -192,3 +192,20 @@ async fn an_empty_dashboard_still_renders() {
     let page = body_string(response).await;
     assert!(page.contains("<tbody></tbody>"), "empty table body: {page}");
 }
+
+#[tokio::test]
+async fn live_status_is_protected_and_returns_swappable_panels() {
+    let router = harness().await;
+    let (device_id, _) = enroll_device(&router, "Live Box", "SER-LIVE").await;
+    let uri = format!("/devices/{device_id}/status");
+    assert_eq!(
+        send(&router, get(&uri, None)).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let response = send(&router, get(&uri, Some(&admin()))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_string(response).await;
+    assert!(body.contains("id=\"health-panel\" hx-swap-oob=\"outerHTML\""));
+    assert!(body.contains("id=\"command-panel\" hx-swap-oob=\"outerHTML\""));
+    assert!(body.contains("Waiting for the first check-in"));
+}

@@ -1,13 +1,11 @@
 use std::{env, sync::Arc};
 
-use argon2::{
-    Argon2, PasswordHasher,
-    password_hash::SaltString,
-};
+use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
 use axum::{
     Json, Router,
-    extract::{Form, Path, State},
+    extract::{Form, Path, Request, State},
     http::{HeaderMap, StatusCode},
+    middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
@@ -32,6 +30,7 @@ pub struct AppState {
     db: SqlitePool,
     admin_password: Arc<str>,
     enrollment_key: Arc<str>,
+    pin_hash_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
@@ -60,6 +59,7 @@ impl AppState {
             db,
             admin_password: admin_password.into(),
             enrollment_key: enrollment_key.into(),
+            pin_hash_slots: Arc::new(tokio::sync::Semaphore::new(1)),
         })
     }
 }
@@ -83,6 +83,7 @@ pub fn app(state: AppState) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/", get(dashboard))
         .route("/devices/{id}", get(device_detail))
+        .route("/devices/{id}/status", get(device_status))
         .route("/devices/{id}/plans", post(create_plan))
         .route("/devices/{id}/payments/{sequence}/paid", post(mark_paid))
         .route("/devices/{id}/commands/remind", post(send_reminder))
@@ -99,10 +100,71 @@ pub fn app(state: AppState) -> Router {
             "/api/v1/devices/{id}/commands/{command_id}/complete",
             post(complete_command),
         )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            authorize_request,
+        ))
         .layer(RequestBodyLimitLayer::new(64 * 1024))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+async fn authorize_request(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let path = request.uri().path();
+    if path == "/" || path.starts_with("/devices/") {
+        if !is_admin(&state, request.headers()) {
+            return unauthorized();
+        }
+        if request.method() != axum::http::Method::GET && !same_origin(request.headers()) {
+            return (
+                StatusCode::FORBIDDEN,
+                "Cross-site admin requests are not allowed",
+            )
+                .into_response();
+        }
+        if let Some(rest) = path.strip_prefix("/devices/") {
+            let id = rest.split('/').next().unwrap_or_default();
+            match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM devices WHERE id=?")
+                .bind(id)
+                .fetch_one(&state.db)
+                .await
+            {
+                Ok(0) => return StatusCode::NOT_FOUND.into_response(),
+                Ok(_) => {}
+                Err(error) => return internal(error),
+            }
+        }
+    } else if let Some(rest) = path.strip_prefix("/api/v1/devices/") {
+        let id = rest.split('/').next().unwrap_or_default();
+        if !is_agent(&state, request.headers(), id).await {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    }
+    next.run(request).await
+}
+
+fn same_origin(headers: &HeaderMap) -> bool {
+    if headers
+        .get("sec-fetch-site")
+        .is_some_and(|value| value == "cross-site")
+    {
+        return false;
+    }
+    let Some(origin) = headers.get("origin").and_then(|value| value.to_str().ok()) else {
+        return true; // Non-browser clients do not send Origin.
+    };
+    let Some(host) = headers.get("host").and_then(|value| value.to_str().ok()) else {
+        return false;
+    };
+    origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+        .is_some_and(|authority| authority == host)
 }
 
 async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -190,7 +252,7 @@ async fn device_detail(
         "Enable managed mode"
     };
     let content = format!(
-        "<nav><a href=\"/\">← All devices</a><span>Device console</span></nav><header class=\"device-hero\"><div><span class=\"eyebrow\">Windows endpoint</span><h1>{}</h1><p class=\"mono\">Serial {}</p></div><div><span class=\"pill {} large\">{mode_label}</span><p>Last seen {}</p></div></header><main><div id=\"notice\"></div>{health_panel}<section><div class=\"section-title\"><div><h2>Remote controls</h2><p>Commands are queued, audited, and acknowledged by the Windows service.</p></div></div><div class=\"control-grid\"><article><span class=\"control-icon\">↗</span><h3>Payment reminder</h3><p>Display a payment notice in the active Windows session.</p><button hx-post=\"/devices/{id}/commands/remind\" hx-target=\"#notice\">Send reminder</button></article><article><span class=\"control-icon\">••</span><h3>Managed lock PIN</h3><p>Set the app restriction PIN. This never changes a Windows account password.</p><form class=\"stack\" hx-post=\"/devices/{id}/commands/pin\" hx-target=\"#notice\"><input name=\"pin\" type=\"password\" inputmode=\"numeric\" minlength=\"4\" maxlength=\"12\" placeholder=\"4–12 digit PIN\" required><input name=\"confirm_pin\" type=\"password\" inputmode=\"numeric\" minlength=\"4\" maxlength=\"12\" placeholder=\"Confirm PIN\" required><button>Queue PIN update</button></form></article><article><span class=\"control-icon\">⚙</span><h3>Management mode</h3><p>Managed mode applies policy. Maintenance mode clears restrictions while keeping health and recovery online.</p><form hx-post=\"/devices/{id}/management\" hx-target=\"#notice\"><input type=\"hidden\" name=\"enabled\" value=\"{next_mode}\"><button class=\"secondary\">{mode_action}</button></form></article><article><span class=\"control-icon\">○</span><h3>Clear restrictions</h3><p>Remove the managed PIN and local restrictions without uninstalling the recovery agent.</p><button class=\"danger\" hx-post=\"/devices/{id}/commands/clear-restrictions\" hx-target=\"#notice\" hx-confirm=\"Clear managed restrictions on this device?\">Clear restrictions</button></article><article class=\"disabled-card\"><span class=\"control-icon\">BIOS</span><h3>Firmware password</h3><p>Requires an encrypted per-device secret and an approved Dell, HP, or Lenovo enterprise adapter.</p><button disabled>OEM adapter required</button></article></div></section><section><div class=\"section-title\"><div><h2>Payment plan</h2><p>Installment schedule and payment state.</p></div></div><form class=\"plan-form\" method=\"post\" action=\"/devices/{id}/plans\"><input name=\"amount\" inputmode=\"decimal\" placeholder=\"Amount e.g. 2500.00\" required><input name=\"currency\" value=\"NPR\" minlength=\"3\" maxlength=\"3\" required><input name=\"periods\" type=\"number\" min=\"1\" max=\"120\" placeholder=\"Periods\" required><input name=\"first_due\" type=\"date\" required><button>Create plan</button></form><div class=\"table-wrap\"><table><tr><th>#</th><th>Amount</th><th>Due</th><th>Status</th></tr>{payments}</table></div></section><section><div class=\"section-title\"><div><h2>Recent commands</h2><p>Latest audited actions and device acknowledgements.</p></div></div>{command_history}</section></main>",
+        "<nav><a href=\"/\">← All devices</a><span>Device console</span></nav><header class=\"device-hero\"><div><span class=\"eyebrow\">Windows endpoint</span><h1>{}</h1><p class=\"mono\">Serial {}</p></div><div><span class=\"eyebrow\">Policy target</span><span class=\"pill {} large\">{mode_label}</span><p>Last seen {}</p></div></header><main hx-get=\"/devices/{id}/status\" hx-trigger=\"every 30s\" hx-swap=\"none\"><div id=\"notice\"></div><div id=\"health-panel\">{health_panel}</div><section><div class=\"section-title\"><div><h2>Remote controls</h2><p>Commands are queued, audited, and acknowledged by the Windows service.</p></div></div><div class=\"control-grid\"><article><span class=\"control-icon\">↗</span><h3>Payment reminder</h3><p>Display a payment notice in the active Windows session.</p><button hx-post=\"/devices/{id}/commands/remind\" hx-target=\"#notice\">Send reminder</button></article><article><span class=\"control-icon\">••</span><h3>Managed lock PIN</h3><p>Set the app restriction PIN. This never changes a Windows account password.</p><form class=\"stack\" hx-post=\"/devices/{id}/commands/pin\" hx-target=\"#notice\"><input aria-label=\"New managed PIN\" name=\"pin\" type=\"password\" inputmode=\"numeric\" minlength=\"4\" maxlength=\"12\" placeholder=\"4–12 digit PIN\" required><input aria-label=\"Confirm managed PIN\" name=\"confirm_pin\" type=\"password\" inputmode=\"numeric\" minlength=\"4\" maxlength=\"12\" placeholder=\"Confirm PIN\" required><button>Queue PIN update</button></form></article><article><span class=\"control-icon\">⚙</span><h3>Management mode</h3><p>Managed mode applies policy. Maintenance mode clears restrictions while keeping health and recovery online.</p><form hx-post=\"/devices/{id}/management\" hx-target=\"#notice\"><input type=\"hidden\" name=\"enabled\" value=\"{next_mode}\"><button class=\"secondary\">{mode_action}</button></form></article><article><span class=\"control-icon\">○</span><h3>Clear restrictions</h3><p>Remove the managed PIN and local restrictions without uninstalling the recovery agent.</p><button class=\"danger\" hx-post=\"/devices/{id}/commands/clear-restrictions\" hx-target=\"#notice\" hx-confirm=\"Clear managed restrictions on this device?\">Clear restrictions</button></article><article class=\"disabled-card\"><span class=\"control-icon\">BIOS</span><h3>Firmware password</h3><p>Requires an encrypted per-device secret and an approved Dell, HP, or Lenovo enterprise adapter.</p><button disabled>OEM adapter required</button></article></div></section><section><div class=\"section-title\"><div><h2>Payment plan</h2><p>Installment schedule and payment state.</p></div></div><form class=\"plan-form\" method=\"post\" action=\"/devices/{id}/plans\"><input name=\"amount\" inputmode=\"decimal\" placeholder=\"Amount e.g. 2500.00\" required><input name=\"currency\" value=\"NPR\" minlength=\"3\" maxlength=\"3\" required><input name=\"periods\" type=\"number\" min=\"1\" max=\"120\" placeholder=\"Periods\" required><input name=\"first_due\" type=\"date\" required><button>Create plan</button></form><div class=\"table-wrap\"><table><tr><th>#</th><th>Amount</th><th>Due</th><th>Status</th></tr>{payments}</table></div></section><div id=\"command-panel\"><section><div class=\"section-title\"><div><h2>Recent commands</h2><p>Latest audited actions and device acknowledgements.</p></div></div>{command_history}</section></div></main>",
         escape(&name),
         escape(&serial),
         if management_enabled { "good" } else { "warn" },
@@ -205,6 +267,29 @@ struct PlanForm {
     currency: String,
     periods: u16,
     first_due: String,
+}
+
+async fn device_status(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let row = match sqlx::query("SELECT health_json, last_seen_at FROM devices WHERE id=?")
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await
+    {
+        Ok(row) => row,
+        Err(error) => return internal(error),
+    };
+    let commands = match sqlx::query("SELECT kind, created_at, completed_at, result FROM commands WHERE device_id=? ORDER BY created_at DESC LIMIT 8")
+        .bind(&id).fetch_all(&state.db).await {
+            Ok(rows) => rows,
+            Err(error) => return internal(error),
+        };
+    let health: Option<String> = row.get("health_json");
+    let seen: Option<String> = row.get("last_seen_at");
+    Html(format!(
+        "<div id=\"health-panel\" hx-swap-oob=\"outerHTML\">{}</div><div id=\"command-panel\" hx-swap-oob=\"outerHTML\"><section><div class=\"section-title\"><div><h2>Recent commands</h2><p>Latest audited actions and device acknowledgements.</p></div></div>{}</section></div>",
+        render_health(health.as_deref(), seen.as_deref()),
+        render_commands(commands),
+    )).into_response()
 }
 
 async fn create_plan(
@@ -359,10 +444,26 @@ async fn set_managed_pin(
     {
         return (StatusCode::BAD_REQUEST, "PIN must be 4–12 matching digits").into_response();
     }
-    let salt = SaltString::encode_b64(Uuid::new_v4().as_bytes())
-        .expect("a UUID is a valid password salt");
-    let hash = match Argon2::default().hash_password(form.pin.as_bytes(), &salt) {
-        Ok(hash) => hash.to_string(),
+    let Ok(permit) = Arc::clone(&state.pin_hash_slots).try_acquire_owned() else {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "PIN update busy; retry shortly",
+        )
+            .into_response();
+    };
+    let hash = match tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let salt = SaltString::encode_b64(Uuid::new_v4().as_bytes())
+            .expect("a UUID is a valid password salt");
+        Argon2::default()
+            .hash_password(form.pin.as_bytes(), &salt)
+            .map(|hash| hash.to_string())
+            .map_err(|error| anyhow::anyhow!("PIN hashing failed: {error}"))
+    })
+    .await
+    {
+        Ok(Ok(hash)) => hash,
+        Ok(Err(error)) => return internal(error),
         Err(error) => return internal(error),
     };
     match queue_command(
@@ -451,9 +552,9 @@ async fn set_management(
     }
     Html(notice(
         if form.enabled {
-            "Managed mode enabled"
+            "Managed mode update queued; waiting for device acknowledgement"
         } else {
-            "Maintenance mode enabled; restrictions are being cleared"
+            "Maintenance update queued; restrictions clear when the device checks in"
         },
         "success",
     ))
@@ -572,7 +673,9 @@ async fn complete_command(
     }
     match sqlx::query("UPDATE commands SET completed_at=?, result=? WHERE id=? AND device_id=? AND completed_at IS NULL")
         .bind(Utc::now().to_rfc3339()).bind(done.result.chars().take(1000).collect::<String>()).bind(command_id).bind(id).execute(&state.db).await {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(), Err(error) => internal(error)
+        Ok(done) if done.rows_affected() == 1 => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => internal(error)
     }
 }
 
@@ -606,7 +709,7 @@ async fn insert_command(
     )
     .bind(Uuid::new_v4().to_string())
     .bind(device_id)
-    .bind(command_kind(&command))
+    .bind(command_kind(command))
     .bind(serde_json::to_string(command)?)
     .bind(Utc::now().to_rfc3339())
     .execute(&mut **tx)
@@ -697,7 +800,15 @@ fn render_health(raw: Option<&str>, last_seen: Option<&str>) -> String {
         return "<section><div class=\"section-title\"><div><h2>Device health</h2><p>Live telemetry reported by the Windows service.</p></div></div><div class=\"empty\"><strong>Waiting for the first check-in</strong><span>Health data will appear after the agent contacts this server.</span></div></section>".into();
     };
 
-    let disk_gib = health.disk_free_bytes as f64 / 1_073_741_824.0;
+    let disk_gib = health.disk_free_bytes / 1_073_741_824;
+    let disk_fraction = health.disk_free_bytes % 1_073_741_824 * 10 / 1_073_741_824;
+    let online = last_seen
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .is_some_and(|seen| {
+            (0..=600).contains(&Utc::now().signed_duration_since(seen).num_seconds())
+        });
+    let connection = if online { "Online" } else { "Offline / stale" };
+    let connection_class = if online { "good" } else { "warn" };
     let battery = health
         .battery_percent
         .map_or_else(|| "Not reported".into(), |value| format!("{value}%"));
@@ -720,13 +831,13 @@ fn render_health(raw: Option<&str>, last_seen: Option<&str>) -> String {
     let cards = vec![
         (
             "Connection",
+            connection.to_owned(),
             last_seen.unwrap_or("never").to_owned(),
-            "Latest check-in".to_owned(),
         ),
         ("Host", health.hostname, health.os_version),
         (
             "Storage free",
-            format!("{disk_gib:.1} GiB"),
+            format!("{disk_gib}.{disk_fraction} GiB"),
             "Across local disks".to_owned(),
         ),
         ("Battery", battery, "Agent reading".to_owned()),
@@ -763,7 +874,7 @@ fn render_health(raw: Option<&str>, last_seen: Option<&str>) -> String {
         .expect("writing to String cannot fail");
     }
     format!(
-        "<section><div class=\"section-title\"><div><h2>Device health</h2><p>Live telemetry reported by the Windows service.</p></div><span class=\"pill good\">Reporting</span></div><div class=\"health-grid\">{metrics}</div></section>"
+        "<section><div class=\"section-title\"><div><h2>Device health</h2><p>Live telemetry reported by the Windows service.</p></div><span class=\"pill {connection_class}\">{connection}</span></div><div class=\"health-grid\">{metrics}</div></section>"
     )
 }
 
@@ -785,7 +896,12 @@ fn render_commands(commands: Vec<SqliteRow>) -> String {
             "rotate_bios_password" => "Firmware password",
             _ => kind.as_str(),
         };
-        let (status, class) = if completed.is_some() {
+        let (status, class) = if result
+            .as_deref()
+            .is_some_and(|value| value.starts_with("error:"))
+        {
+            ("Failed", "error")
+        } else if completed.is_some() {
             ("Completed", "good")
         } else {
             ("Queued", "warn")
@@ -815,8 +931,9 @@ fn notice(message: &str, kind: &str) -> String {
 
 fn layout(title: &str, content: &str) -> String {
     format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.7/dist/htmx.min.js" integrity="sha384-ZBXiYtYQ6hJ2Y0ZNoYuI+Nq5MqWBr+chMrS/RkXpNzQCApHEhOt2aY8EJgqwHLkJ" crossorigin="anonymous"></script><style>{}</style></head><body>{content}</body></html>"#,
-        include_str!("style.css")
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.7/dist/htmx.min.js" integrity="sha384-ZBXiYtYQ6hJ2Y0ZNoYuI+Nq5MqWBr+chMrS/RkXpNzQCApHEhOt2aY8EJgqwHLkJ" crossorigin="anonymous"></script><style>{}</style></head><body>{content}<script>{}</script></body></html>"#,
+        include_str!("style.css"),
+        include_str!("ui.js")
     )
 }
 

@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "emi-control-plane"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -924,7 +924,7 @@ dependencies = [
 
 [[package]]
 name = "emi-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "rust_decimal",
@@ -936,9 +936,10 @@ dependencies = [
 
 [[package]]
 name = "emi-device-agent"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
+ "argon2",
  "axum",
  "base64",
  "chrono",

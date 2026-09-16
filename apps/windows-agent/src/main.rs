@@ -95,9 +95,32 @@ async fn enroll(
     name: Option<String>,
     serial: Option<String>,
 ) -> anyhow::Result<()> {
+    let server = server.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    if let Ok(config) = load_config() {
+        if config.server == server {
+            client
+                .get(format!(
+                    "{server}/api/v1/devices/{}/commands",
+                    config.device_id
+                ))
+                .bearer_auth(&config.agent_token)
+                .send()
+                .await?
+                .error_for_status()?;
+            info!(device_id=%config.device_id, "existing enrollment verified");
+            save_config(&config)?;
+            return Ok(());
+        }
+        bail!(
+            "device is already enrolled to a different server; use administrator recovery before re-enrolling"
+        );
+    }
     let name = name.unwrap_or_else(hostname);
     let serial = serial.unwrap_or_else(machine_serial);
-    let response = reqwest::Client::new()
+    let response = client
         .post(format!("{}/api/v1/enroll", server.trim_end_matches('/')))
         .json(&EnrollRequest {
             enrollment_key: key,
@@ -124,14 +147,17 @@ async fn run(once: bool) -> anyhow::Result<()> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
+    let mut cycle = 0_u8;
     loop {
-        if let Err(error) = check_in(&client, &config).await {
+        let result = check_in(&client, &config, once || cycle == 0).await;
+        if once {
+            return result;
+        }
+        if let Err(error) = result {
             error!(%error, "check-in failed");
         }
-        if once {
-            return Ok(());
-        }
-        for _ in 0..60 {
+        cycle = (cycle + 1) % 20;
+        for _ in 0..3 {
             if STOP_REQUESTED.load(Ordering::Relaxed) {
                 return Ok(());
             }
@@ -140,8 +166,12 @@ async fn run(once: bool) -> anyhow::Result<()> {
     }
 }
 
-async fn check_in(client: &reqwest::Client, config: &AgentConfig) -> anyhow::Result<()> {
-    let health = collect_health(config.device_id);
+async fn report_health_to_server(
+    client: &reqwest::Client,
+    config: &AgentConfig,
+) -> anyhow::Result<()> {
+    let device_id = config.device_id;
+    let health = tokio::task::spawn_blocking(move || collect_health(device_id)).await?;
     client
         .post(format!(
             "{}/api/v1/devices/{}/health",
@@ -152,6 +182,17 @@ async fn check_in(client: &reqwest::Client, config: &AgentConfig) -> anyhow::Res
         .send()
         .await?
         .error_for_status()?;
+    Ok(())
+}
+
+async fn check_in(
+    client: &reqwest::Client,
+    config: &AgentConfig,
+    report_health: bool,
+) -> anyhow::Result<()> {
+    if report_health {
+        report_health_to_server(client, config).await?;
+    }
     let commands = client
         .get(format!(
             "{}/api/v1/devices/{}/commands",
@@ -163,6 +204,14 @@ async fn check_in(client: &reqwest::Client, config: &AgentConfig) -> anyhow::Res
         .error_for_status()?
         .json::<Vec<QueuedCommand>>()
         .await?;
+    let policy_changed = commands.iter().any(|queued| {
+        matches!(
+            queued.command,
+            DeviceCommand::SetManagedLockPin { .. }
+                | DeviceCommand::SetManagementEnabled { .. }
+                | DeviceCommand::ClearManagedRestrictions
+        )
+    });
     for queued in commands {
         let result = execute(&queued.command).unwrap_or_else(|error| format!("error: {error:#}"));
         client
@@ -175,6 +224,9 @@ async fn check_in(client: &reqwest::Client, config: &AgentConfig) -> anyhow::Res
             .send()
             .await?
             .error_for_status()?;
+    }
+    if policy_changed {
+        report_health_to_server(client, config).await?;
     }
     Ok(())
 }
@@ -189,7 +241,7 @@ fn collect_health(device_id: Uuid) -> DeviceHealth {
         os_version: System::long_os_version().unwrap_or_else(|| "unknown".into()),
         agent_version: env!("CARGO_PKG_VERSION").into(),
         disk_free_bytes: disks.iter().map(sysinfo::Disk::available_space).sum(),
-        battery_percent: None,
+        battery_percent: battery_status(),
         secure_boot: secure_boot_status(),
         winget_available: executable_available("winget"),
         bios_provider: detect_bios_provider(),
@@ -202,7 +254,9 @@ fn execute(command: &DeviceCommand) -> anyhow::Result<String> {
     match command {
         DeviceCommand::ShowPaymentReminder { title, message } => show_notification(title, message),
         DeviceCommand::SetManagedLockPin { pin_hash } => {
-            if pin_hash.len() < 32 {
+            if !argon2::PasswordHash::new(pin_hash)
+                .is_ok_and(|hash| hash.algorithm.as_str() == "argon2id")
+            {
                 bail!("invalid managed PIN verifier");
             }
             fs::write(data_dir()?.join("managed-pin.verifier"), pin_hash)
@@ -332,14 +386,24 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
 fn show_notification(title: &str, message: &str) -> anyhow::Result<String> {
     #[cfg(windows)]
     {
+        fs::write(
+            data_dir()?.join("payment-notice.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "title": title,
+                "message": message,
+                "created_at": Utc::now().to_rfc3339(),
+            }))?,
+        )?;
         let text = format!("{}: {}", sanitize_message(title), sanitize_message(message));
         let status = Command::new("msg.exe")
             .args(["*", "/TIME:120", &text])
-            .status()?;
-        if !status.success() {
-            bail!("notification command failed");
+            .status();
+        if !status.is_ok_and(|status| status.success()) {
+            return Ok(
+                "payment notice saved for the desktop UI; active-session popup unavailable".into(),
+            );
         }
-        Ok("notification displayed".into())
+        Ok("notification displayed and saved in desktop UI".into())
     }
     #[cfg(not(windows))]
     {
@@ -399,7 +463,29 @@ fn secure_boot_status() -> Option<bool> {
             .output()
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .and_then(|v| v.trim().parse().ok())
+            .and_then(|v| v.trim().to_ascii_lowercase().parse().ok())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+fn battery_status() -> Option<u8> {
+    #[cfg(windows)]
+    {
+        Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-CimInstance Win32_Battery | Select-Object -First 1 -ExpandProperty EstimatedChargeRemaining",
+            ])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|value| value.trim().parse::<u8>().ok())
+            .filter(|value| *value <= 100)
     }
     #[cfg(not(windows))]
     {
@@ -455,6 +541,13 @@ fn data_dir() -> anyhow::Result<PathBuf> {
 }
 fn save_config(config: &AgentConfig) -> anyhow::Result<()> {
     fs::write(config_path()?, serde_json::to_vec_pretty(config)?)?;
+    fs::write(
+        data_dir()?.join("ui-config.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "server": config.server,
+            "device_id": config.device_id,
+        }))?,
+    )?;
     Ok(())
 }
 fn load_config() -> anyhow::Result<AgentConfig> {
@@ -580,7 +673,12 @@ mod tests {
 
     #[test]
     fn managed_pin_lifecycle_writes_then_clears_the_verifier() {
-        let verifier = "a".repeat(64);
+        use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+        let salt = SaltString::encode_b64(b"test-agent-salt").expect("salt");
+        let verifier = Argon2::default()
+            .hash_password(b"294817", &salt)
+            .expect("hash")
+            .to_string();
         let path = data_dir().expect("data dir").join("managed-pin.verifier");
 
         let result = execute(&DeviceCommand::SetManagedLockPin {

@@ -13,6 +13,16 @@ A small Rust monorepo for consent-based management of Windows devices sold on in
 - Windows service installation and official WinGet bootstrap
 - Native `egui`/`eframe` Windows status UI installed for all user sessions
 - Tag-driven Windows builds and GitHub releases
+- Remote app PIN updates (Argon2id verifier only), clear restrictions, and managed/maintenance mode
+- Responsive device console with health metrics, online/stale status, and queued/completed/failed command history
+
+## Remote management console
+
+Open a device from the dashboard to send a payment reminder, set a matching 4–12 digit app PIN, clear the PIN, or switch between managed and maintenance modes. Commands poll every 15 seconds; full health telemetry refreshes every five minutes and after policy changes. The web page refreshes health and acknowledgements every 30 seconds. The policy target is separate from the agent's reported mode until acknowledgement.
+
+The desktop PIN protects the application's details screen only. It does not lock the entire PC, alter a Windows account password, or change Windows Hello. Maintenance disables app restrictions but deliberately keeps telemetry and administrator recovery available. Remote desktop viewing, arbitrary shell execution, Windows password resets, and BIOS credential rotation are not implemented.
+
+Upgrade an existing Windows installation using the new release's `install.ps1`; it stops the existing service/UI, preserves verified enrollment on the same server, and installs both new binaries. Agent credentials are kept in a restricted file while the desktop reads a token-free public configuration. “Check in now” requests administrator elevation.
 
 ## Safety boundaries
 
@@ -41,7 +51,7 @@ The production image runs as an unprivileged user on a distroless Debian base, d
 
 Do not plan a Docker deployment around a 100 MB RAM or 100 MB disk limit. The control-plane process is lightweight, but the Docker daemon, unpacked image layers, SQLite data, and logs need headroom. Use at least 256 MB RAM and 500 MB free disk for a very small installation; 512 MB RAM and 1 GB free disk is the recommended practical minimum.
 
-Open `http://localhost:3000` and sign in as `admin` with `ADMIN_PASSWORD`.
+Open the host port from `CONTROL_PLANE_PORT` (3000 by default; this workspace uses 3100) and sign in as `admin` with `ADMIN_PASSWORD`.
 
 For local Rust development:
 

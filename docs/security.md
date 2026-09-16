@@ -20,3 +20,6 @@ Firmware secrets must never be stored or queued as plaintext. The intended comma
 
 The `SetManagedLockPin` command stores a verifier for an application-managed restriction screen. It does not alter a Windows account password or Windows Hello PIN. A production lock experience should use Windows Assigned Access, MDM CSPs, or another documented enterprise policy and must preserve emergency access.
 
+The console hashes a PIN with Argon2id before queueing it; PIN hashing is concurrency-limited to bound server memory. The native UI verifies the PIN off its rendering thread. Maintenance mode removes the verifier and leaves health/recovery running. This is not an operating-system lock or a non-removable agent.
+
+Admin mutations reject cross-site Fetch Metadata and mismatched Origin/Host headers before parsing the body. Preserve the public Host header at your reverse proxy. Basic authentication, shared enrollment, unsigned binaries, and the absence of encrypted firmware envelopes remain production blockers; do not mistake this starter for a hardened enterprise MDM.

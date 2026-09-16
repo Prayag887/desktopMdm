@@ -264,7 +264,7 @@ async fn commands_are_scoped_to_their_device() {
         ),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     let for_a = body_json(
         send(
