@@ -444,3 +444,153 @@ fn load_config() -> anyhow::Result<AgentConfig> {
 fn _is_file(path: &Path) -> bool {
     path.is_file()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_identity_is_never_empty() {
+        assert!(!hostname().is_empty());
+        assert!(!machine_serial().is_empty());
+    }
+
+    #[test]
+    fn a_missing_executable_is_not_reported_as_available() {
+        assert!(!executable_available(
+            "emi-definitely-not-a-real-executable-name"
+        ));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn windows_only_probes_degrade_gracefully_off_windows() {
+        assert_eq!(secure_boot_status(), None);
+        assert_eq!(detect_bios_provider(), BiosProvider::Unsupported);
+    }
+
+    #[test]
+    fn collected_health_describes_this_host() {
+        let device_id = Uuid::new_v4();
+        let health = collect_health(device_id);
+        assert_eq!(health.device_id, device_id);
+        assert_eq!(health.agent_version, env!("CARGO_PKG_VERSION"));
+        assert!(!health.hostname.is_empty());
+        assert!(!health.os_version.is_empty());
+        assert!(
+            health.observed_at <= Utc::now(),
+            "observed_at must not be in the future"
+        );
+        assert!(
+            serde_json::to_string(&health).is_ok(),
+            "health must be serializable for the control plane"
+        );
+    }
+
+    #[test]
+    fn agent_config_round_trips_through_its_on_disk_form() {
+        let config = AgentConfig {
+            server: "https://control.example".into(),
+            device_id: Uuid::new_v4(),
+            agent_token: "6fa459ea-ee8a-3ca4-894e-db77e160355e".into(),
+        };
+        let encoded = serde_json::to_vec_pretty(&config).expect("serialize");
+        let decoded: AgentConfig = serde_json::from_slice(&encoded).expect("deserialize");
+        assert_eq!(decoded.server, config.server);
+        assert_eq!(decoded.device_id, config.device_id);
+        assert_eq!(decoded.agent_token, config.agent_token);
+    }
+
+    #[test]
+    fn the_enrollment_response_shape_matches_the_control_plane() {
+        let body = r#"{"device_id":"6fa459ea-ee8a-3ca4-894e-db77e160355e","agent_token":"tok"}"#;
+        let decoded: EnrollResponse = serde_json::from_str(body).expect("deserialize");
+        assert_eq!(decoded.agent_token, "tok");
+        assert_eq!(
+            decoded.device_id,
+            Uuid::parse_str("6fa459ea-ee8a-3ca4-894e-db77e160355e").expect("uuid")
+        );
+    }
+
+    #[test]
+    fn the_queued_command_shape_matches_the_control_plane() {
+        let body = r#"[{"id":"cmd-1","command":{"type":"show_payment_reminder","parameters":{"title":"T","message":"M"}}}]"#;
+        let decoded: Vec<QueuedCommand> = serde_json::from_str(body).expect("deserialize");
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].id, "cmd-1");
+        match &decoded[0].command {
+            DeviceCommand::ShowPaymentReminder { title, message } => {
+                assert_eq!(title, "T");
+                assert_eq!(message, "M");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_short_managed_pin_verifier_is_refused() {
+        let error = execute(&DeviceCommand::SetManagedLockPin {
+            pin_hash: "too-short".into(),
+        })
+        .expect_err("a weak verifier must be refused");
+        assert!(error.to_string().contains("invalid managed PIN verifier"));
+    }
+
+    #[test]
+    fn bios_password_rotation_refuses_to_claim_success() {
+        let error = execute(&DeviceCommand::RotateBiosPassword {
+            encrypted_secret: "envelope".into(),
+        })
+        .expect_err("BIOS rotation has no OEM adapter and must not report success");
+        assert!(error.to_string().contains("no secret was applied"));
+    }
+
+    #[test]
+    fn reminders_are_acknowledged_on_every_platform() {
+        let result = execute(&DeviceCommand::ShowPaymentReminder {
+            title: "Payment reminder".into(),
+            message: "Your EMI payment is due.".into(),
+        })
+        .expect("reminders must not fail the check-in");
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn managed_pin_lifecycle_writes_then_clears_the_verifier() {
+        let verifier = "a".repeat(64);
+        let path = data_dir().expect("data dir").join("managed-pin.verifier");
+
+        let result = execute(&DeviceCommand::SetManagedLockPin {
+            pin_hash: verifier.clone(),
+        })
+        .expect("store verifier");
+        assert!(result.contains("updated"));
+        assert_eq!(fs::read_to_string(&path).expect("read verifier"), verifier);
+
+        let result = execute(&DeviceCommand::ClearManagedRestrictions).expect("clear restrictions");
+        assert!(result.contains("cleared"));
+        assert!(!path.exists(), "the verifier must be removed");
+
+        // Clearing again must stay successful so a retried command does not fail the queue.
+        execute(&DeviceCommand::ClearManagedRestrictions).expect("clearing twice must succeed");
+    }
+
+    #[test]
+    fn the_data_directory_is_created_on_demand() {
+        let path = data_dir().expect("data dir");
+        assert!(path.is_dir());
+        assert_eq!(
+            config_path().expect("config path"),
+            path.join("config.json")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn notification_text_is_stripped_of_control_characters_and_bounded() {
+        let dirty = format!("a\r\nb\u{7}c{}", "x".repeat(500));
+        let clean = sanitize_message(&dirty);
+        assert!(!clean.contains('\r') && !clean.contains('\n') && !clean.contains('\u{7}'));
+        assert!(clean.chars().count() <= 300);
+    }
+}
