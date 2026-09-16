@@ -101,7 +101,13 @@ pub struct DeviceHealth {
     pub secure_boot: Option<bool>,
     pub winget_available: bool,
     pub bios_provider: BiosProvider,
+    #[serde(default = "enabled_by_default")]
+    pub management_enabled: bool,
     pub observed_at: DateTime<Utc>,
+}
+
+const fn enabled_by_default() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -119,6 +125,7 @@ pub enum DeviceCommand {
     ShowPaymentReminder { title: String, message: String },
     SetManagedLockPin { pin_hash: String },
     RotateBiosPassword { encrypted_secret: String },
+    SetManagementEnabled { enabled: bool },
     ClearManagedRestrictions,
 }
 

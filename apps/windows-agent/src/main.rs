@@ -193,6 +193,7 @@ fn collect_health(device_id: Uuid) -> DeviceHealth {
         secure_boot: secure_boot_status(),
         winget_available: executable_available("winget"),
         bios_provider: detect_bios_provider(),
+        management_enabled: management_is_enabled(),
         observed_at: Utc::now(),
     }
 }
@@ -211,6 +212,22 @@ fn execute(command: &DeviceCommand) -> anyhow::Result<String> {
         DeviceCommand::RotateBiosPassword { .. } => bail!(
             "BIOS secret envelope execution requires a configured OEM adapter; no secret was applied"
         ),
+        DeviceCommand::SetManagementEnabled { enabled } => {
+            fs::write(
+                data_dir()?.join("management.enabled"),
+                if *enabled { "1" } else { "0" },
+            )?;
+            if !enabled {
+                let pin = data_dir()?.join("managed-pin.verifier");
+                if pin.exists() {
+                    fs::remove_file(pin)?;
+                }
+            }
+            Ok(format!(
+                "management mode {}",
+                if *enabled { "enabled" } else { "disabled" }
+            ))
+        }
         DeviceCommand::ClearManagedRestrictions => {
             let path = data_dir()?.join("managed-pin.verifier");
             if path.exists() {
@@ -414,6 +431,12 @@ fn detect_bios_provider() -> BiosProvider {
         }
     }
     BiosProvider::Unsupported
+}
+fn management_is_enabled() -> bool {
+    data_dir()
+        .ok()
+        .and_then(|path| fs::read_to_string(path.join("management.enabled")).ok())
+        .is_none_or(|value| value.trim() != "0")
 }
 fn config_path() -> anyhow::Result<PathBuf> {
     Ok(data_dir()?.join("config.json"))

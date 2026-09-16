@@ -1,0 +1,1 @@
+ALTER TABLE devices ADD COLUMN management_enabled INTEGER NOT NULL DEFAULT 1;
