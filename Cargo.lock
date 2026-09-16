@@ -725,7 +725,7 @@ dependencies = [
 
 [[package]]
 name = "emi-core"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chrono",
  "rust_decimal",
@@ -737,7 +737,7 @@ dependencies = [
 
 [[package]]
 name = "emi-device-agent"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "chrono",

@@ -103,7 +103,7 @@ mod windows_app {
         }
 
         fn render_prank(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
-            ui.heading("Blue-screen simulation");
+            ui.heading("Blue screen mode");
             ui.label("A temporary visual prank — Windows keeps running normally.");
             ui.add_space(16.0);
             ui.label("PC's private LAN IPv4 address");
@@ -155,11 +155,30 @@ mod windows_app {
                 }
             }
             ui.add_space(12.0);
-            ui.label("Scan the QR and tap Dismiss, press Escape, close the app, or reboot to exit. Automatic safety timeout: 5 minutes. Restart always begins unchecked.");
+            ui.label("Escape does not dismiss Blue screen mode. Use Exit, scan the QR and tap Dismiss, close the app, or reboot. Automatic safety timeout: 5 minutes. Restart always begins unchecked.");
             ui.small("This does not crash Windows, block recovery keys, change BIOS settings or prevent switching apps.");
         }
 
-        fn render_blue_screen(&self, context: &egui::Context) {
+        fn end_blue_screen(&mut self, context: &egui::Context) {
+            self.prank = None;
+            self.qr = None;
+            self.consent = false;
+            self.status = "Blue screen mode ended. The checkbox is reset.".into();
+            context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        }
+
+        fn blue_screen_active(&mut self, context: &egui::Context) -> bool {
+            if self
+                .prank
+                .as_ref()
+                .is_some_and(|session| session.dismissed() || session.expired())
+            {
+                self.end_blue_screen(context);
+            }
+            self.prank.is_some()
+        }
+
+        fn render_blue_screen(&mut self, context: &egui::Context) {
             egui::CentralPanel::default()
                 .frame(
                     egui::Frame::NONE
@@ -191,11 +210,15 @@ mod windows_app {
                                 ui.label("Open the link on a phone on the same network,");
                                 ui.label("then tap Dismiss simulated blue screen.");
                                 ui.add_space(12.0);
-                                ui.label("Emergency exit: Escape · Restart also clears it");
+                                ui.label("Escape is disabled · Restart clears this mode");
                                 ui.label("Automatically ends after 5 minutes");
                             });
                         });
                     });
+                    ui.add_space(16.0);
+                    if ui.button("Exit blue screen mode").clicked() {
+                        self.end_blue_screen(context);
+                    }
                 });
         }
 
@@ -306,21 +329,10 @@ mod windows_app {
 
     impl eframe::App for DeviceApp {
         fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
-            if let Some(session) = &self.prank {
+            if self.blue_screen_active(context) {
                 context.request_repaint_after(Duration::from_millis(100));
-                if session.dismissed()
-                    || session.expired()
-                    || context.input(|input| input.key_pressed(egui::Key::Escape))
-                {
-                    self.prank = None;
-                    self.qr = None;
-                    self.consent = false;
-                    self.status = "Simulation ended. The checkbox is reset.".into();
-                    context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                } else {
-                    self.render_blue_screen(context);
-                    return;
-                }
+                self.render_blue_screen(context);
+                return;
             }
             context.request_repaint_after(Duration::from_secs(2));
             if self.last_refresh.elapsed() >= Duration::from_secs(5) {
@@ -353,7 +365,7 @@ mod windows_app {
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut self.tab, 0, "Overview");
                         ui.selectable_value(&mut self.tab, 1, "BIOS passwords");
-                        ui.selectable_value(&mut self.tab, 2, "Prank mode");
+                        ui.selectable_value(&mut self.tab, 2, "Blue screen mode");
                     });
                     if previous == 1 && self.tab != 1 { self.clear_passwords(); }
                     ui.separator();
@@ -457,6 +469,32 @@ mod windows_app {
             app.current_password.push_str("test-only");
             app.clear_passwords();
             assert!(app.current_password.is_empty());
+        }
+
+        #[test]
+        fn escape_does_not_dismiss_but_explicit_exit_resets_mode() {
+            let mut app = DeviceApp::load();
+            app.prank = Some(PrankSession::start(std::net::Ipv4Addr::LOCALHOST).unwrap());
+            app.consent = true;
+            let context = egui::Context::default();
+            let input = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::default(),
+                }],
+                ..Default::default()
+            };
+            let _ = context.run(input, |context| {
+                assert!(context.input(|input| input.key_pressed(egui::Key::Escape)));
+                assert!(app.blue_screen_active(context));
+            });
+            assert!(app.prank.is_some());
+            app.end_blue_screen(&context);
+            assert!(app.prank.is_none());
+            assert!(!app.consent);
         }
     }
 }

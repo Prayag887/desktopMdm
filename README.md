@@ -13,11 +13,11 @@ A lightweight, standalone Windows desktop app written in Rust with a native egui
 
 This is the desktop-only foundation, not a complete EMI administration product. Payment editing, reminder scheduling, local administrator controls, BIOS password changes, Windows account password changes, and remote device control are not implemented in this version. They must be designed as desktop workflows separately. The app is normally uninstallable by an authorized administrator.
 
-## Prank mode
+## Blue screen mode
 
-Open Prank mode, verify the PC's private IPv4 address, acknowledge permission, and check Show simulated blue screen. The blue screen displays a QR code. On a phone on the same trusted network, scan it and tap Dismiss simulated blue screen. Merely scanning/opening the link does not dismiss it.
+Open Blue screen mode, verify the PC's private IPv4 address, acknowledge permission, and check Show simulated blue screen. The blue screen displays a QR code. On a phone on the same trusted network, scan it and tap Dismiss simulated blue screen. Merely scanning/opening the link does not dismiss it.
 
-Escape, closing the app, rebooting, or the five-minute safety timeout also ends the simulation. OS recovery keys and switching applications remain available. The simulation is memory-only: restarting always starts unchecked, and it never alters firmware or Windows settings.
+Escape does not dismiss Blue screen mode. The explicit Exit button, closing the app, rebooting, or the five-minute safety timeout ends the simulation. OS recovery keys and switching applications remain available. The simulation is memory-only: restarting always starts unchecked, and it never alters firmware or Windows settings.
 
 Windows Firewall may ask for Private-network access; the app does not change firewall rules itself. Guest-network isolation/VPNs may prevent phone access. The loopback fallback `127.0.0.1` works only on the PC. The single-use QR link grants dismissal only, uses plain HTTP on the LAN, expires with the session, and should not be shared outside the trusted network. No separate server deployment is required.
 
@@ -67,7 +67,7 @@ cargo run --package emi-device-agent --bin emi-device-ui
 cargo run --package emi-device-agent --bin emi-device-agent -- run --once
 ```
 
-The GUI is Windows-only; other platforms compile the domain library, QR listener and local-service tests. `cargo run --package emi-device-agent --example qr-preview` previews the exact phone page on loopback without running a prank. GitHub Actions checks the Windows GUI and installer syntax and builds both binaries for tagged releases. Real Windows rendering, fullscreen/Escape behavior, phone/firewall connectivity, UAC, service install/uninstall, and resume still need a PC/VM smoke test.
+The GUI is Windows-only; other platforms compile the domain library, QR listener and local-service tests. `cargo run --package emi-device-agent --example qr-preview` previews the exact phone page on loopback without running a prank. GitHub Actions checks the Windows GUI and installer syntax and builds both binaries for tagged releases. Real Windows rendering, fullscreen/Exit behavior, phone/firewall connectivity, UAC, service install/uninstall, and resume still need a PC/VM smoke test.
 
 ## Repository
 
