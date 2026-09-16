@@ -22,6 +22,7 @@ fn qr_requires_explicit_authorized_post_and_does_not_persist() {
     assert!(!session.dismissed());
     assert!(request(&session, "GET", session.path(), "").contains("Dismiss simulated blue screen"));
     assert!(!session.dismissed(), "scanner prefetch must not dismiss");
+    assert!(request(&session, "GET", session.path(), "").contains("Referrer-Policy: same-origin"));
     assert!(request(&session, "POST", "/wrong", "").contains("404"));
     assert!(
         request(
@@ -33,11 +34,27 @@ fn qr_requires_explicit_authorized_post_and_does_not_persist() {
         .contains("403")
     );
     assert!(!session.dismissed());
-    assert!(request(&session, "POST", session.path(), "").contains("Simulation dismissed"));
+    let origin = format!(
+        "Origin: http://{}\r\nSec-Fetch-Site: same-origin\r\n",
+        session.address()
+    );
+    assert!(request(&session, "POST", session.path(), &origin).contains("Simulation dismissed"));
     assert!(session.dismissed());
+    assert!(request(&session, "POST", session.path(), "").contains("410 Gone"));
     let address = session.address();
     drop(session);
     assert!(TcpStream::connect(address).is_err());
     let restarted = PrankSession::start(Ipv4Addr::LOCALHOST).unwrap();
     assert!(!restarted.dismissed());
+}
+
+#[test]
+fn private_interface_and_slow_client_shutdown_are_bounded() {
+    assert!(PrankSession::start(Ipv4Addr::new(8, 8, 8, 8)).is_err());
+    let session = PrankSession::start(Ipv4Addr::LOCALHOST).unwrap();
+    let mut socket = TcpStream::connect(session.address()).unwrap();
+    socket.write_all(b"GET / HTTP/1.1\r\n").unwrap();
+    let start = std::time::Instant::now();
+    drop(session);
+    assert!(start.elapsed() < Duration::from_secs(2));
 }

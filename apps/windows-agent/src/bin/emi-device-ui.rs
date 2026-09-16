@@ -451,7 +451,7 @@ mod windows_app {
             });
             assert!(!output.shapes.is_empty());
             let output = context.run(egui::RawInput::default(), |context| {
-                app.render_blue_screen(context)
+                app.render_blue_screen(context);
             });
             assert!(!output.shapes.is_empty());
             app.current_password.push_str("test-only");
