@@ -2,7 +2,7 @@ use std::{env, sync::Arc};
 
 use argon2::{
     Argon2, PasswordHasher,
-    password_hash::{SaltString, rand_core::OsRng},
+    password_hash::SaltString,
 };
 use axum::{
     Json, Router,
@@ -295,7 +295,7 @@ async fn mark_paid(
     .bind(&now)
     .bind(&id)
     .bind(sequence)
-    .execute(&mut **tx)
+    .execute(&mut *tx)
     .await;
     match result {
         Ok(done) if done.rows_affected() == 1 => {
@@ -359,7 +359,8 @@ async fn set_managed_pin(
     {
         return (StatusCode::BAD_REQUEST, "PIN must be 4–12 matching digits").into_response();
     }
-    let salt = SaltString::generate(&mut OsRng);
+    let salt = SaltString::encode_b64(Uuid::new_v4().as_bytes())
+        .expect("a UUID is a valid password salt");
     let hash = match Argon2::default().hash_password(form.pin.as_bytes(), &salt) {
         Ok(hash) => hash.to_string(),
         Err(error) => return internal(error),
@@ -608,7 +609,7 @@ async fn insert_command(
     .bind(command_kind(&command))
     .bind(serde_json::to_string(command)?)
     .bind(Utc::now().to_rfc3339())
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
     Ok(())
 }
