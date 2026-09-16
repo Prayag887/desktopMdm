@@ -18,6 +18,7 @@ mod windows_app {
 
     use eframe::egui::{self, Color32, RichText};
     use serde::Deserialize;
+    use std::os::windows::process::CommandExt as _;
     use uuid::Uuid;
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -54,7 +55,7 @@ mod windows_app {
 
     impl DeviceApp {
         fn load() -> Self {
-            match read_config() {
+            let mut app = match read_config() {
                 Ok(config) => Self {
                     server: config.server,
                     device_id: config.device_id.to_string(),
@@ -67,7 +68,7 @@ mod windows_app {
                     pin_attempt: String::new(),
                     unlocked: false,
                     next_pin_attempt: Instant::now(),
-                    last_policy_refresh: Instant::now() - Duration::from_secs(10),
+                    last_policy_refresh: Instant::now(),
                     payment_notice: None,
                     dismissed_notice: None,
                 },
@@ -83,11 +84,13 @@ mod windows_app {
                     pin_attempt: String::new(),
                     unlocked: false,
                     next_pin_attempt: Instant::now(),
-                    last_policy_refresh: Instant::now() - Duration::from_secs(10),
+                    last_policy_refresh: Instant::now(),
                     payment_notice: None,
                     dismissed_notice: None,
                 },
-            }
+            };
+            app.refresh_policy();
+            app
         }
 
         fn check_now(&mut self) {
@@ -100,7 +103,6 @@ mod windows_app {
             thread::spawn(move || {
                 let result = agent_path()
                     .and_then(|agent| {
-                        use std::os::windows::process::CommandExt as _;
                         let script = format!(
                             "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath '{}' -ArgumentList 'run','--once' -Verb RunAs -PassThru -Wait; exit $p.ExitCode",
                             agent.to_string_lossy().replace('\'', "''")
@@ -130,7 +132,6 @@ mod windows_app {
                 self.status = "No valid control-plane URL is configured".into();
                 return;
             }
-            use std::os::windows::process::CommandExt as _;
             match Command::new("rundll32.exe")
                 .args(["url.dll,FileProtocolHandler", &self.server])
                 .creation_flags(CREATE_NO_WINDOW)
@@ -331,7 +332,6 @@ mod windows_app {
     }
 
     fn service_is_running() -> bool {
-        use std::os::windows::process::CommandExt as _;
         Command::new("sc.exe")
             .args(["query", "EmiDeviceAgent"])
             .creation_flags(CREATE_NO_WINDOW)
@@ -367,6 +367,23 @@ fn pin_matches(pin: &str, verifier: &str) -> bool {
     })
 }
 
+#[cfg(windows)]
+fn main() -> eframe::Result<()> {
+    use std::os::windows::process::CommandExt as _;
+    let result = windows_app::run();
+    if let Err(error) = &result {
+        let _ = std::fs::write(
+            std::env::temp_dir().join("emi-device-ui-startup-error.log"),
+            format!("EMI Device UI startup failed: {error}"),
+        );
+        let _ = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('The desktop UI could not start. See emi-device-ui-startup-error.log in your TEMP folder for details.', 'EMI Device')"])
+            .creation_flags(0x0800_0000)
+            .status();
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
@@ -382,9 +399,4 @@ mod tests {
         assert!(!super::pin_matches("wrong", &verifier));
         assert!(!super::pin_matches("294817", "invalid-verifier"));
     }
-}
-
-#[cfg(windows)]
-fn main() -> eframe::Result<()> {
-    windows_app::run()
 }

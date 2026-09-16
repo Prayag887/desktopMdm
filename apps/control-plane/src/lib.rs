@@ -134,6 +134,9 @@ async fn authorize_request(
                 .fetch_one(&state.db)
                 .await
             {
+                Ok(0) if request.method() == axum::http::Method::GET => {
+                    return (StatusCode::NOT_FOUND, Html(layout("Device not enrolled", "<nav><a href=\"/\">← Fleet console</a></nav><header class=\"device-hero\"><div><span class=\"eyebrow\">Enrollment required</span><h1>Device not found</h1><p>This device ID is not present in the current server database.</p></div></header><main><section><h2>Connect the Windows PC</h2><p>Install or repair the Windows agent using this server's reachable URL and enrollment key. If the PC belongs to another deployment, restore the correct database rather than replacing its identity.</p><a href=\"https://github.com/Prayag887/desktopMdm/releases/latest\">Download the Windows agent →</a></section></main>"))).into_response();
+                }
                 Ok(0) => return StatusCode::NOT_FOUND.into_response(),
                 Ok(_) => {}
                 Err(error) => return internal(error),
@@ -189,7 +192,12 @@ async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Respons
         let mode = if managed { "Managed" } else { "Maintenance" };
         write!(body, "<tr><td><a class=\"device-link\" href=\"/devices/{id}\">{}</a></td><td class=\"mono\">{}</td><td><span class=\"pill {}\">{mode}</span></td><td>{paid}/{periods}</td><td>{}</td></tr>", escape(&name), escape(&serial), if managed { "good" } else { "warn" }, escape(seen.as_deref().unwrap_or("never"))).expect("writing to String cannot fail");
     }
-    Html(layout("EMI devices", &format!("<header class=\"page-header\"><div><span class=\"eyebrow\">Fleet console</span><h1>EMI Device Control</h1><p>Payments, device health, and audited management controls.</p></div><div class=\"header-stat\"><strong>Secure admin</strong><span>Authenticated session</span></div></header><main><section><div class=\"section-title\"><div><h2>Enrolled devices</h2><p>Select a device to review health and controls.</p></div></div><div class=\"table-wrap\"><table><thead><tr><th>Device</th><th>Serial</th><th>Mode</th><th>Paid</th><th>Last seen</th></tr></thead><tbody>{body}</tbody></table></div></section></main>"))).into_response()
+    let empty = if body.is_empty() {
+        "<div class=\"empty\"><strong>No devices enrolled</strong><span>Install the Windows agent with this server's reachable URL and enrollment key to connect your first PC.</span><a href=\"https://github.com/Prayag887/desktopMdm/releases/latest\">Download Windows agent →</a></div>"
+    } else {
+        ""
+    };
+    Html(layout("EMI devices", &format!("<header class=\"page-header\"><div><span class=\"eyebrow\">Fleet console</span><h1>EMI Device Control</h1><p>Payments, device health, and audited management controls.</p></div><div class=\"header-stat\"><strong>Secure admin</strong><span>Authenticated session</span></div></header><main><section><div class=\"section-title\"><div><h2>Enrolled devices</h2><p>Select a device to review health and controls.</p></div></div><div class=\"table-wrap\"><table><thead><tr><th>Device</th><th>Serial</th><th>Mode</th><th>Paid</th><th>Last seen</th></tr></thead><tbody>{body}</tbody></table></div>{empty}</section></main>"))).into_response()
 }
 
 async fn device_detail(
@@ -252,11 +260,11 @@ async fn device_detail(
         "Enable managed mode"
     };
     let content = format!(
-        "<nav><a href=\"/\">← All devices</a><span>Device console</span></nav><header class=\"device-hero\"><div><span class=\"eyebrow\">Windows endpoint</span><h1>{}</h1><p class=\"mono\">Serial {}</p></div><div><span class=\"eyebrow\">Policy target</span><span class=\"pill {} large\">{mode_label}</span><p>Last seen {}</p></div></header><main hx-get=\"/devices/{id}/status\" hx-trigger=\"every 30s\" hx-swap=\"none\"><div id=\"notice\"></div><div id=\"health-panel\">{health_panel}</div><section><div class=\"section-title\"><div><h2>Remote controls</h2><p>Commands are queued, audited, and acknowledged by the Windows service.</p></div></div><div class=\"control-grid\"><article><span class=\"control-icon\">↗</span><h3>Payment reminder</h3><p>Display a payment notice in the active Windows session.</p><button hx-post=\"/devices/{id}/commands/remind\" hx-target=\"#notice\">Send reminder</button></article><article><span class=\"control-icon\">••</span><h3>Managed lock PIN</h3><p>Set the app restriction PIN. This never changes a Windows account password.</p><form class=\"stack\" hx-post=\"/devices/{id}/commands/pin\" hx-target=\"#notice\"><input aria-label=\"New managed PIN\" name=\"pin\" type=\"password\" inputmode=\"numeric\" minlength=\"4\" maxlength=\"12\" placeholder=\"4–12 digit PIN\" required><input aria-label=\"Confirm managed PIN\" name=\"confirm_pin\" type=\"password\" inputmode=\"numeric\" minlength=\"4\" maxlength=\"12\" placeholder=\"Confirm PIN\" required><button>Queue PIN update</button></form></article><article><span class=\"control-icon\">⚙</span><h3>Management mode</h3><p>Managed mode applies policy. Maintenance mode clears restrictions while keeping health and recovery online.</p><form hx-post=\"/devices/{id}/management\" hx-target=\"#notice\"><input type=\"hidden\" name=\"enabled\" value=\"{next_mode}\"><button class=\"secondary\">{mode_action}</button></form></article><article><span class=\"control-icon\">○</span><h3>Clear restrictions</h3><p>Remove the managed PIN and local restrictions without uninstalling the recovery agent.</p><button class=\"danger\" hx-post=\"/devices/{id}/commands/clear-restrictions\" hx-target=\"#notice\" hx-confirm=\"Clear managed restrictions on this device?\">Clear restrictions</button></article><article class=\"disabled-card\"><span class=\"control-icon\">BIOS</span><h3>Firmware password</h3><p>Requires an encrypted per-device secret and an approved Dell, HP, or Lenovo enterprise adapter.</p><button disabled>OEM adapter required</button></article></div></section><section><div class=\"section-title\"><div><h2>Payment plan</h2><p>Installment schedule and payment state.</p></div></div><form class=\"plan-form\" method=\"post\" action=\"/devices/{id}/plans\"><input name=\"amount\" inputmode=\"decimal\" placeholder=\"Amount e.g. 2500.00\" required><input name=\"currency\" value=\"NPR\" minlength=\"3\" maxlength=\"3\" required><input name=\"periods\" type=\"number\" min=\"1\" max=\"120\" placeholder=\"Periods\" required><input name=\"first_due\" type=\"date\" required><button>Create plan</button></form><div class=\"table-wrap\"><table><tr><th>#</th><th>Amount</th><th>Due</th><th>Status</th></tr>{payments}</table></div></section><div id=\"command-panel\"><section><div class=\"section-title\"><div><h2>Recent commands</h2><p>Latest audited actions and device acknowledgements.</p></div></div>{command_history}</section></div></main>",
+        "<nav><a href=\"/\">← All devices</a><span>Device console</span></nav><header class=\"device-hero\"><div><span class=\"eyebrow\">Windows endpoint</span><h1>{}</h1><p class=\"mono\">Serial {}</p></div><div><span class=\"eyebrow\">Policy target</span><span class=\"pill {} large\">{mode_label}</span><p>Last seen {}</p></div></header><main hx-get=\"/devices/{id}/status\" hx-trigger=\"every 30s\" hx-swap=\"none\"><div id=\"notice\"></div><div id=\"health-panel\">{health_panel}</div><section><div class=\"section-title\"><div><h2>Remote controls</h2><p>Commands are queued, audited, and acknowledged by the Windows service.</p></div></div><div class=\"control-grid\"><article><span class=\"control-icon\">↗</span><h3>Payment reminder</h3><p>Display a payment notice in the active Windows session.</p><button hx-post=\"/devices/{id}/commands/remind\" hx-target=\"#notice\">Send reminder</button></article><article><span class=\"control-icon\">••</span><h3>Managed lock PIN</h3><p>Set the app restriction PIN. This never changes a Windows account password.</p><form class=\"stack\" hx-post=\"/devices/{id}/commands/pin\" hx-target=\"#notice\"><input aria-label=\"New managed PIN\" name=\"pin\" type=\"password\" inputmode=\"numeric\" minlength=\"4\" maxlength=\"12\" placeholder=\"4–12 digit PIN\" required><input aria-label=\"Confirm managed PIN\" name=\"confirm_pin\" type=\"password\" inputmode=\"numeric\" minlength=\"4\" maxlength=\"12\" placeholder=\"Confirm PIN\" required><button>Queue PIN update</button></form></article><article><span class=\"control-icon\">⚙</span><h3>Management mode</h3><p>Managed mode applies policy. Maintenance mode clears restrictions while keeping health and recovery online.</p><form hx-post=\"/devices/{id}/management\" hx-target=\"#notice\"><input type=\"hidden\" name=\"enabled\" value=\"{next_mode}\"><button class=\"secondary\">{mode_action}</button></form></article><article><span class=\"control-icon\">○</span><h3>Clear restrictions</h3><p>Remove the managed PIN and local restrictions without uninstalling the recovery agent.</p><button class=\"danger\" hx-post=\"/devices/{id}/commands/clear-restrictions\" hx-target=\"#notice\" hx-confirm=\"Clear managed restrictions on this device?\">Clear restrictions</button></article><article class=\"disabled-card\"><span class=\"control-icon\">BIOS</span><h3>Firmware password</h3><p>Requires an encrypted per-device secret and an approved Dell, HP, or Lenovo enterprise adapter.</p><button disabled>OEM adapter required</button></article><article class=\"disabled-card\"><span class=\"control-icon\">WIN</span><h3>Windows account password</h3><p>Requires an approved local account, encrypted secret delivery, and an administrator recovery policy.</p><button disabled>Account policy required</button></article></div></section><section><div class=\"section-title\"><div><h2>Payment plan</h2><p>Installment schedule and payment state.</p></div></div><form class=\"plan-form\" method=\"post\" action=\"/devices/{id}/plans\"><input name=\"amount\" inputmode=\"decimal\" placeholder=\"Amount e.g. 2500.00\" required><input name=\"currency\" value=\"NPR\" minlength=\"3\" maxlength=\"3\" required><input name=\"periods\" type=\"number\" min=\"1\" max=\"120\" placeholder=\"Periods\" required><input name=\"first_due\" type=\"date\" required><button>Create plan</button></form><div class=\"table-wrap\"><table><tr><th>#</th><th>Amount</th><th>Due</th><th>Status</th></tr>{payments}</table></div></section><div id=\"command-panel\"><section><div class=\"section-title\"><div><h2>Recent commands</h2><p>Latest audited actions and device acknowledgements.</p></div></div>{command_history}</section></div></main>",
         escape(&name),
         escape(&serial),
         if management_enabled { "good" } else { "warn" },
-        escape(last_seen.as_deref().unwrap_or("never")),
+        escape(&display_time(last_seen.as_deref().unwrap_or("never"))),
     );
     Html(layout("Device", &content)).into_response()
 }
@@ -794,6 +802,17 @@ fn escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+fn display_time(value: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(value).map_or_else(
+        |_| value.to_owned(),
+        |time| {
+            time.with_timezone(&Utc)
+                .format("%d %b %Y, %H:%M UTC")
+                .to_string()
+        },
+    )
+}
+
 fn render_health(raw: Option<&str>, last_seen: Option<&str>) -> String {
     let Some(health) = raw.and_then(|value| serde_json::from_str::<DeviceHealth>(value).ok())
     else {
@@ -832,7 +851,7 @@ fn render_health(raw: Option<&str>, last_seen: Option<&str>) -> String {
         (
             "Connection",
             connection.to_owned(),
-            last_seen.unwrap_or("never").to_owned(),
+            display_time(last_seen.unwrap_or("never")),
         ),
         ("Host", health.hostname, health.os_version),
         (
@@ -912,7 +931,7 @@ fn render_commands(commands: Vec<SqliteRow>) -> String {
             escape(label),
             escape(result.as_deref().unwrap_or("Waiting for device acknowledgement")),
             class,
-            escape(&created)
+            escape(&display_time(&created))
         )
         .expect("writing to String cannot fail");
     }
