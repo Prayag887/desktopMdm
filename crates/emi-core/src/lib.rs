@@ -1,4 +1,4 @@
-//! Shared, dependency-light domain types for the control plane and Windows agent.
+//! Dependency-light local EMI plan and desktop device-health types.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
@@ -128,13 +128,7 @@ pub struct DeviceHealth {
     pub secure_boot: Option<bool>,
     pub winget_available: bool,
     pub bios_provider: BiosProvider,
-    #[serde(default = "enabled_by_default")]
-    pub management_enabled: bool,
     pub observed_at: DateTime<Utc>,
-}
-
-const fn enabled_by_default() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -144,16 +138,6 @@ pub enum BiosProvider {
     Hp,
     Lenovo,
     Unsupported,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", content = "parameters", rename_all = "snake_case")]
-pub enum DeviceCommand {
-    ShowPaymentReminder { title: String, message: String },
-    SetManagedLockPin { pin_hash: String },
-    RotateBiosPassword { encrypted_secret: String },
-    SetManagementEnabled { enabled: bool },
-    ClearManagedRestrictions,
 }
 
 #[cfg(test)]
@@ -345,7 +329,6 @@ mod tests {
             secure_boot: Some(true),
             winget_available: false,
             bios_provider: BiosProvider::Lenovo,
-            management_enabled: true,
             observed_at: DateTime::parse_from_rfc3339("2026-09-16T10:00:00Z")
                 .expect("valid timestamp")
                 .with_timezone(&Utc),
@@ -354,58 +337,6 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<DeviceHealth>(&encoded).expect("deserialize"),
             health
-        );
-    }
-
-    /// The exact envelope the control plane emits and the Windows agent consumes.
-    #[test]
-    fn device_commands_use_the_tagged_envelope_the_agent_expects() {
-        let cases = [
-            (
-                DeviceCommand::ShowPaymentReminder {
-                    title: "Payment reminder".into(),
-                    message: "Due".into(),
-                },
-                r#"{"type":"show_payment_reminder","parameters":{"title":"Payment reminder","message":"Due"}}"#,
-            ),
-            (
-                DeviceCommand::SetManagedLockPin {
-                    pin_hash: "abc".into(),
-                },
-                r#"{"type":"set_managed_lock_pin","parameters":{"pin_hash":"abc"}}"#,
-            ),
-            (
-                DeviceCommand::RotateBiosPassword {
-                    encrypted_secret: "xyz".into(),
-                },
-                r#"{"type":"rotate_bios_password","parameters":{"encrypted_secret":"xyz"}}"#,
-            ),
-            (
-                DeviceCommand::ClearManagedRestrictions,
-                r#"{"type":"clear_managed_restrictions"}"#,
-            ),
-            (
-                DeviceCommand::SetManagementEnabled { enabled: false },
-                r#"{"type":"set_management_enabled","parameters":{"enabled":false}}"#,
-            ),
-        ];
-
-        for (command, expected) in cases {
-            let encoded = serde_json::to_string(&command).expect("serialize");
-            assert_eq!(encoded, expected);
-            assert_eq!(
-                serde_json::from_str::<DeviceCommand>(expected).expect("deserialize"),
-                command
-            );
-        }
-    }
-
-    #[test]
-    fn unknown_command_types_are_rejected_rather_than_silently_accepted() {
-        assert!(
-            serde_json::from_str::<DeviceCommand>(r#"{"type":"wipe_disk","parameters":{}}"#)
-                .is_err(),
-            "an unrecognized command must not deserialize"
         );
     }
 

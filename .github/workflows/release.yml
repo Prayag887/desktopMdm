@@ -1,11 +1,11 @@
-name: Windows release
+name: Windows desktop release
 on:
   push:
     tags: ['v*']
 permissions:
   contents: write
 jobs:
-  windows-agent:
+  windows-desktop:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,7 +16,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo build --release --package emi-device-agent
-      - name: Package agent
+      - name: Package desktop app
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/emi-device-agent-windows-x64 | Out-Null

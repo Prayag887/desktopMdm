@@ -1,25 +1,11 @@
-# Security and deployment boundaries
+# Desktop-only security boundaries
 
-## Required before production
-
-1. Terminate TLS at a trusted reverse proxy; never enroll over plain HTTP.
-2. Replace shared enrollment keys with short-lived, single-device enrollment tokens.
-3. Store agent tokens with Windows DPAPI or TPM-backed keys and hash server-side token values.
-4. Add named admin accounts, MFA/SSO, CSRF protection, session expiry, and role-based authorization. Basic authentication is only a bootstrap mechanism.
-5. Authenticode-sign the agent and installer, pin update signatures, and restrict service/installation ACLs with an enterprise policy.
-6. Add rate limits, encrypted backups, retention policy, audit export, alerting, and a formal privacy/consent flow.
-7. Obtain legal review before using payment status to limit a financed device; local consumer-credit and privacy laws vary.
-
-## Firmware credentials
-
-BIOS management differs by OEM and model. A production adapter must use the vendor-supported enterprise interface (for example, a supported Dell, HP, or Lenovo management provider), verify model/firmware compatibility, preserve a break-glass recovery secret, and report an auditable result.
-
-Firmware secrets must never be stored or queued as plaintext. The intended command shape contains an encrypted envelope, but this repository intentionally ships without an encryption-key enrollment protocol or adapter. The agent therefore rejects BIOS rotation commands. Add an audited per-device public-key envelope design before enabling the admin control.
-
-## PIN semantics
-
-The `SetManagedLockPin` command stores a verifier for an application-managed restriction screen. It does not alter a Windows account password or Windows Hello PIN. A production lock experience should use Windows Assigned Access, MDM CSPs, or another documented enterprise policy and must preserve emergency access.
-
-The console hashes a PIN with Argon2id before queueing it; PIN hashing is concurrency-limited to bound server memory. The native UI verifies the PIN off its rendering thread. Maintenance mode removes the verifier and leaves health/recovery running. This is not an operating-system lock or a non-removable agent.
-
-Admin mutations reject cross-site Fetch Metadata and mismatched Origin/Host headers before parsing the body. Preserve the public Host header at your reverse proxy. Basic authentication, shared enrollment, unsigned binaries, and the absence of encrypted firmware envelopes remain production blockers; do not mistake this starter for a hardened enterprise MDM.
+- No network backend, socket connection, enrollment, remote command handler, or portal is present. Device health stays on this PC.
+- The installer requires administrator access. Program Files protects the installed binaries; ProgramData permissions give administrators/System write access and ordinary users read access to local health.
+- The GUI's health refresh requests UAC approval to run the local companion. Denial is reported; it is not bypassed.
+- An administrator retains ordinary recovery and uninstall access. Absolute uninstall prevention and operating-system lockout are not implemented.
+- BIOS manufacturer detection is read-only. Firmware passwords, Windows account passwords, managed PINs, and remote control are not implemented in the desktop-only foundation.
+- Payment schedules remain domain types, not an implemented storage/editor/payment-processing system. Do not treat local files as payment confirmation from a financial provider.
+- Existing database volumes, historical files, and previous releases are retained. Updated initialization removes obsolete server/token fields from configuration while keeping the local UUID. It does not delete other historical state.
+- The optional WinGet bootstrap downloads from Microsoft's official endpoint. Use SkipWingetBootstrap for offline installation; the Rust app itself does not require WinGet.
+- Release binaries are not yet code-signed. Windows CI compilation/tests do not replace a real GUI/UAC/service/resume smoke test.

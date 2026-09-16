@@ -36,16 +36,3 @@ jobs:
             [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
             if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
           }
-
-  container:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          tags: emi-control-plane:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max

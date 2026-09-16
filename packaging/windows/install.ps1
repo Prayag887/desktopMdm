@@ -1,8 +1,7 @@
 #Requires -RunAsAdministrator
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$true)][string]$Server,
-  [Parameter(Mandatory=$true)][string]$EnrollmentKey,
+  [switch]$SkipWingetBootstrap,
   [string]$InstallDir = "$env:ProgramFiles\EmiDeviceAgent"
 )
 $ErrorActionPreference = 'Stop'
@@ -22,23 +21,24 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item $exe (Join-Path $InstallDir 'emi-device-agent.exe') -Force
 Copy-Item $uiExe (Join-Path $InstallDir 'emi-device-ui.exe') -Force
 $agent = Join-Path $InstallDir 'emi-device-agent.exe'
-& $agent bootstrap
-Assert-NativeExit 'WinGet bootstrap'
-& $agent enroll --server $Server --enrollment-key $EnrollmentKey
-Assert-NativeExit 'Device enrollment'
+if (-not $SkipWingetBootstrap) {
+  & $agent bootstrap
+  Assert-NativeExit 'WinGet bootstrap'
+}
+& $agent init
+Assert-NativeExit 'Local device initialization'
+& $agent run --once
+Assert-NativeExit 'Initial local health snapshot'
 $dataDir = Join-Path $env:ProgramData 'EmiDeviceAgent'
 icacls.exe $dataDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' /T | Out-Null
 Assert-NativeExit 'Agent state permissions'
-$configPath = Join-Path $dataDir 'config.json'
-icacls.exe $configPath /inheritance:r /remove:g '*S-1-5-32-545' '*S-1-5-11' '*S-1-1-0' | Out-Null
-Assert-NativeExit 'Private agent credentials permissions'
 if (Get-Service EmiDeviceAgent -ErrorAction SilentlyContinue) {
   sc.exe config EmiDeviceAgent binPath= "`"$agent`" service" start= auto | Out-Null
 } else {
   sc.exe create EmiDeviceAgent binPath= "`"$agent`" service" start= auto DisplayName= "EMI Device Agent" | Out-Null
 }
 Assert-NativeExit 'Windows service setup'
-sc.exe description EmiDeviceAgent "Authorized payment-plan device management and health agent" | Out-Null
+sc.exe description EmiDeviceAgent "Standalone desktop companion and local device health" | Out-Null
 Assert-NativeExit 'Windows service description'
 sc.exe failure EmiDeviceAgent reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
 Assert-NativeExit 'Windows service recovery'
@@ -49,7 +49,7 @@ $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = Join-Path $InstallDir 'emi-device-ui.exe'
 $shortcut.WorkingDirectory = $InstallDir
-$shortcut.Description = 'EMI device status and payment notifications'
+$shortcut.Description = 'Standalone EMI desktop companion'
 $shortcut.Save()
 Start-Process (Join-Path $InstallDir 'emi-device-ui.exe')
-Write-Host 'EMI Device Agent and desktop UI installed and enrolled.' -ForegroundColor Green
+Write-Host 'EMI desktop companion installed. No server or enrollment required.' -ForegroundColor Green
