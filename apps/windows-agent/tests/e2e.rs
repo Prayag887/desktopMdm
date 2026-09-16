@@ -99,6 +99,111 @@ fn describe(output: &Output) -> String {
     )
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn waking_agent_drains_more_than_one_batch_of_offline_commands() {
+    let server = ControlPlane::start().await;
+    let home = AgentHome::new("offline-backlog");
+    let (id, token) = enrolled(&server, &home, "OFFLINE-BACKLOG");
+    let client = admin_client();
+    for _ in 0..25 {
+        client
+            .post(format!("{}/devices/{id}/commands/remind", server.base_url))
+            .header("authorization", admin_header())
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+    }
+    let output = home.agent().args(["run", "--once"]).output().unwrap();
+    assert!(output.status.success(), "{}", describe(&output));
+    let remaining: serde_json::Value = client
+        .get(format!("{}/api/v1/devices/{id}/commands", server.base_url))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        remaining,
+        serde_json::json!([]),
+        "all offline commands must be drained on first wake"
+    );
+    server.stop();
+}
+
+struct RunningAgent(std::process::Child);
+
+impl Drop for RunningAgent {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+async fn await_mode(home: &AgentHome, expected: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        loop {
+            if fs::read_to_string(home.root.join("EmiDeviceAgent/management.enabled"))
+                .ok()
+                .as_deref()
+                == Some(expected)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("agent must apply mode promptly, before the 20-second heartbeat or 60-second fallback");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn socket_agent_applies_live_commands_and_recovers_after_being_offline() {
+    let server = ControlPlane::start().await;
+    let home = AgentHome::new("socket-live");
+    let (id, _) = enrolled(&server, &home, "SOCKET-LIVE");
+    let client = admin_client();
+    client
+        .post(format!("{}/devices/{id}/management", server.base_url))
+        .header("authorization", admin_header())
+        .form(&[("enabled", "false")])
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let running = RunningAgent(home.agent().arg("run").spawn().unwrap());
+    await_mode(&home, "0").await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    client
+        .post(format!("{}/devices/{id}/management", server.base_url))
+        .header("authorization", admin_header())
+        .form(&[("enabled", "true")])
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    await_mode(&home, "1").await;
+    drop(running);
+    client
+        .post(format!("{}/devices/{id}/management", server.base_url))
+        .header("authorization", admin_header())
+        .form(&[("enabled", "false")])
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let running = RunningAgent(home.agent().arg("run").spawn().unwrap());
+    await_mode(&home, "0").await;
+    drop(running);
+    server.stop();
+}
+
 fn admin_client() -> reqwest::Client {
     reqwest::Client::new()
 }

@@ -8,7 +8,12 @@ document.body.addEventListener('htmx:responseError', (event) => {
 document.body.addEventListener('htmx:afterRequest', (event) => {
   if (!event.detail.successful) return;
   const element = event.detail.elt;
+  const notice = document.getElementById('notice');
+  if (event.detail.target === notice && notice) {
+    notice.className = '';
+    notice.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  }
   const action = element.getAttribute('hx-post') || '';
-  if (action.endsWith('/management')) window.location.reload();
+  if (action.endsWith('/management') || action.endsWith('/plans')) window.location.reload();
   if (action.endsWith('/commands/pin')) element.reset();
 });

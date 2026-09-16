@@ -14,6 +14,25 @@ use common::{
 const HTMX_SRI: &str = "sha384-ZBXiYtYQ6hJ2Y0ZNoYuI+Nq5MqWBr+chMrS/RkXpNzQCApHEhOt2aY8EJgqwHLkJ";
 
 #[tokio::test]
+async fn polling_does_not_suppress_actions_and_plan_inputs_have_labels() {
+    let router = harness().await;
+    let (id, _) = enroll_device(&router, "UI Box", "UI-REGRESSION").await;
+    let page =
+        body_string(send(&router, get(&format!("/devices/{id}"), Some(&admin()))).await).await;
+    assert!(page.contains("hx-disinherit=\"hx-swap\""));
+    for label in [
+        "Installment amount",
+        "Currency",
+        "Number of periods",
+        "First due date",
+    ] {
+        assert!(page.contains(label), "missing label: {label}");
+    }
+    assert!(page.contains(&format!("hx-post=\"/devices/{id}/plans\"")));
+    assert!(page.contains("aria-live=\"polite\""));
+}
+
+#[tokio::test]
 async fn pages_reference_htmx_with_a_well_formed_integrity_digest() {
     let router = harness().await;
     let (device_id, _) = enroll_device(&router, "Box", "SER-SRI").await;

@@ -18,7 +18,17 @@ A small Rust monorepo for consent-based management of Windows devices sold on in
 
 ## Remote management console
 
-Open a device from the dashboard to send a payment reminder, set a matching 4–12 digit app PIN, clear the PIN, or switch between managed and maintenance modes. Commands poll every 15 seconds; full health telemetry refreshes every five minutes and after policy changes. The web page refreshes health and acknowledgements every 30 seconds. The policy target is separate from the agent's reported mode until acknowledgement.
+Open a device from the dashboard to send a payment reminder, set a matching 4–12 digit app PIN, clear the PIN, or switch between managed and maintenance modes. Agents maintain an authenticated outbound WebSocket for immediate command signals. Commands are committed to SQLite before signaling and stay pending until execution is acknowledged. Offline PCs drain the backlog on service startup/reconnection; Windows resume events request an immediate sync once networking is available. Full health telemetry refreshes every five minutes and after policy changes. The web page refreshes health and acknowledgements every 30 seconds. The policy target is separate from the agent's reported mode until acknowledgement.
+
+### Socket delivery and offline recovery
+
+Use agent version 0.4.0 or later for socket delivery; existing 0.3.0 agents still work through their polling API. Re-run the installer with the updated release on existing PCs. The same server URL and enrollment are reused; no extra inbound PC ports are needed.
+
+The socket endpoint is `/api/v1/devices/{id}/socket`. HTTPS server URLs become `wss://` with certificate verification. Configure the reverse proxy to forward WebSocket Upgrade/Connection headers and preserve Authorization and Host; use a read timeout over 45 seconds. Socket authentication uses the per-device bearer token in a header, never a query string. Plain HTTP/WS is only for local development.
+
+Delivery is **at least once**, not exactly once: losing an acknowledgement can replay an action. Existing policy commands are idempotent assignments/removals; a payment reminder can be repeated. Commands run sequentially and multiple 20-command batches are drained without waiting for another poll. Executed errors are acknowledged as failed, not silently retried forever. SQLite storage must remain on the persistent Docker volume and be backed up; deleting it deletes pending commands.
+
+Sockets reconnect with a 1–30 second backoff. A 20-second server heartbeat also requests reconciliation, and a 60-second HTTP fallback recovers lost signals or proxy incompatibility. Windows resume triggers sync within about a second when the agent is idle, but a PC cannot execute while powered off, asleep, or disconnected from the network. Delivery requires the installed service to run and networking/server reachability to return. The lightweight single-server implementation caps concurrent socket connections at 256 and uses a bounded 128-entry signal channel; overflow triggers durable reconciliation rather than discarding commands.
 
 The desktop PIN protects the application's details screen only. It does not lock the entire PC, alter a Windows account password, or change Windows Hello. Maintenance disables app restrictions but deliberately keeps telemetry and administrator recovery available. Remote desktop viewing, arbitrary shell execution, Windows password resets, and BIOS credential rotation are not implemented.
 

@@ -17,6 +17,26 @@ async fn detail(router: &axum::Router, device_id: &str) -> String {
 }
 
 #[tokio::test]
+async fn htmx_plan_creation_returns_feedback_instead_of_a_document() {
+    let router = harness().await;
+    let (id, _) = enroll_device(&router, "HTMX Plan", "PLAN-HTMX").await;
+    let mut request = post_form(
+        &format!("/devices/{id}/plans"),
+        Some(&admin()),
+        "amount=2500&currency=NPR&periods=6&first_due=2026-10-01",
+    );
+    request
+        .headers_mut()
+        .insert("hx-request", "true".parse().unwrap());
+    let response = send(&router, request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let fragment = body_string(response).await;
+    assert!(fragment.contains("Payment plan created"));
+    assert!(!fragment.contains("<html"));
+    assert_eq!(detail(&router, &id).await.matches("Mark paid").count(), 6);
+}
+
+#[tokio::test]
 async fn creating_a_plan_schedules_monthly_instalments() {
     let router = harness().await;
     let (device_id, _) = enroll_device(&router, "Plan Box", "SER-PLAN").await;
@@ -218,6 +238,10 @@ async fn marking_an_instalment_paid_is_idempotent_and_reflected_in_the_ui() {
     let first = send(&router, post_empty(&uri, Some(&admin()))).await;
     assert_eq!(first.status(), StatusCode::OK);
     let fragment = body_string(first).await;
+    assert!(
+        fragment.contains("10.00 NPR") && fragment.contains("2026-10-01"),
+        "paid row must retain amount and due date: {fragment}"
+    );
     assert!(
         fragment.starts_with("<tr>") && fragment.contains("Paid"),
         "htmx swap fragment must be a table row: {fragment}"

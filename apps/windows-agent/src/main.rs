@@ -10,8 +10,10 @@ use anyhow::{Context, bail};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use emi_core::{BiosProvider, DeviceCommand, DeviceHealth};
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use sysinfo::{Disks, System};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -45,8 +47,9 @@ enum AgentCommand {
 }
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+static RESUME_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct AgentConfig {
     server: String,
     device_id: Uuid,
@@ -147,22 +150,87 @@ async fn run(once: bool) -> anyhow::Result<()> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
-    let mut cycle = 0_u8;
+    if once {
+        return check_in(&client, &config, true).await;
+    }
+    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    let socket_task = tokio::spawn(socket_signals(config.clone(), std::sync::Arc::clone(&wake)));
+    let mut fallback = tokio::time::interval(Duration::from_secs(60));
+    let mut stop_check = tokio::time::interval(Duration::from_secs(1));
+    let mut last_health = None;
     loop {
-        let result = check_in(&client, &config, once || cycle == 0).await;
-        if once {
-            return result;
-        }
-        if let Err(error) = result {
-            error!(%error, "check-in failed");
-        }
-        cycle = (cycle + 1) % 20;
-        for _ in 0..3 {
-            if STOP_REQUESTED.load(Ordering::Relaxed) {
-                return Ok(());
+        tokio::select! {
+            () = wake.notified() => {},
+            _ = fallback.tick() => {},
+            _ = stop_check.tick() => {
+                if STOP_REQUESTED.load(Ordering::Relaxed) {
+                    socket_task.abort();
+                    return Ok(());
+                }
+                if !RESUME_REQUESTED.swap(false, Ordering::Relaxed) { continue; }
             }
-            tokio::time::sleep(Duration::from_secs(5)).await;
         }
+        let health_due = last_health
+            .is_none_or(|time: tokio::time::Instant| time.elapsed() >= Duration::from_secs(300));
+        if let Err(error) = check_in(&client, &config, health_due).await {
+            error!(%error, "check-in failed");
+        } else if health_due {
+            last_health = Some(tokio::time::Instant::now());
+        }
+    }
+}
+
+async fn socket_signals(config: AgentConfig, wake: std::sync::Arc<tokio::sync::Notify>) {
+    let mut backoff = 1_u64;
+    loop {
+        let result = socket_session(&config, &wake).await;
+        if result.is_ok() {
+            backoff = 1;
+        }
+        // Never include the request or token in diagnostic output.
+        info!(
+            retry_seconds = backoff,
+            "command socket disconnected; durable sync remains available"
+        );
+        tokio::time::sleep(Duration::from_secs(backoff)).await;
+        backoff = (backoff * 2).min(30);
+    }
+}
+
+async fn socket_session(config: &AgentConfig, wake: &tokio::sync::Notify) -> anyhow::Result<()> {
+    let mut url = reqwest::Url::parse(&format!(
+        "{}/api/v1/devices/{}/socket",
+        config.server, config.device_id
+    ))?;
+    let scheme = match url.scheme() {
+        "https" => "wss",
+        "http" => "ws",
+        _ => bail!("unsupported server scheme"),
+    };
+    url.set_scheme(scheme)
+        .map_err(|()| anyhow::anyhow!("invalid socket scheme"))?;
+    let mut request = url.as_str().into_client_request()?;
+    request.headers_mut().insert(
+        "authorization",
+        format!("Bearer {}", config.agent_token).parse()?,
+    );
+    let (mut socket, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio_tungstenite::connect_async(request),
+    )
+    .await??;
+    wake.notify_one();
+    loop {
+        let message = tokio::time::timeout(Duration::from_secs(45), socket.next()).await?;
+        match message {
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) if text == "sync" => {
+                wake.notify_one();
+            }
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => return Ok(()),
+            Some(Err(error)) => return Err(error.into()),
+            Some(Ok(_)) => {}
+        }
+        socket.flush().await?;
     }
 }
 
@@ -190,42 +258,49 @@ async fn check_in(
     config: &AgentConfig,
     report_health: bool,
 ) -> anyhow::Result<()> {
-    if report_health {
-        report_health_to_server(client, config).await?;
-    }
-    let commands = client
-        .get(format!(
-            "{}/api/v1/devices/{}/commands",
-            config.server, config.device_id
-        ))
-        .bearer_auth(&config.agent_token)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Vec<QueuedCommand>>()
-        .await?;
-    let policy_changed = commands.iter().any(|queued| {
-        matches!(
-            queued.command,
-            DeviceCommand::SetManagedLockPin { .. }
-                | DeviceCommand::SetManagementEnabled { .. }
-                | DeviceCommand::ClearManagedRestrictions
-        )
-    });
-    for queued in commands {
-        let result = execute(&queued.command).unwrap_or_else(|error| format!("error: {error:#}"));
-        client
-            .post(format!(
-                "{}/api/v1/devices/{}/commands/{}/complete",
-                config.server, config.device_id, queued.id
+    let mut policy_changed = false;
+    loop {
+        if STOP_REQUESTED.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let commands = client
+            .get(format!(
+                "{}/api/v1/devices/{}/commands",
+                config.server, config.device_id
             ))
             .bearer_auth(&config.agent_token)
-            .json(&serde_json::json!({"result": result}))
             .send()
             .await?
-            .error_for_status()?;
+            .error_for_status()?
+            .json::<Vec<QueuedCommand>>()
+            .await?;
+        if commands.is_empty() {
+            break;
+        }
+        policy_changed |= commands.iter().any(|queued| {
+            matches!(
+                queued.command,
+                DeviceCommand::SetManagedLockPin { .. }
+                    | DeviceCommand::SetManagementEnabled { .. }
+                    | DeviceCommand::ClearManagedRestrictions
+            )
+        });
+        for queued in commands {
+            let result =
+                execute(&queued.command).unwrap_or_else(|error| format!("error: {error:#}"));
+            client
+                .post(format!(
+                    "{}/api/v1/devices/{}/commands/{}/complete",
+                    config.server, config.device_id, queued.id
+                ))
+                .bearer_auth(&config.agent_token)
+                .json(&serde_json::json!({"result": result}))
+                .send()
+                .await?
+                .error_for_status()?;
+        }
     }
-    if policy_changed {
+    if policy_changed || report_health {
         report_health_to_server(client, config).await?;
     }
     Ok(())
@@ -331,8 +406,8 @@ windows_service::define_windows_service!(ffi_service_main, service_main);
 fn service_main(_arguments: Vec<std::ffi::OsString>) {
     use windows_service::{
         service::{
-            ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
-            ServiceType,
+            PowerEventParam, ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState,
+            ServiceStatus, ServiceType,
         },
         service_control_handler::{self, ServiceControlHandlerResult},
     };
@@ -342,6 +417,15 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
             ServiceControlHandlerResult::NoError
         }
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+        ServiceControl::PowerEvent(
+            PowerEventParam::ResumeAutomatic
+            | PowerEventParam::ResumeSuspend
+            | PowerEventParam::ResumeCritical,
+        ) => {
+            RESUME_REQUESTED.store(true, Ordering::Relaxed);
+            ServiceControlHandlerResult::NoError
+        }
+        ServiceControl::PowerEvent(_) => ServiceControlHandlerResult::NoError,
         _ => ServiceControlHandlerResult::NotImplemented,
     };
     let Ok(handle) = service_control_handler::register("EmiDeviceAgent", handler) else {
@@ -350,7 +434,7 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
     let running = ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: ServiceState::Running,
-        controls_accepted: ServiceControlAccept::STOP,
+        controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::POWER_EVENT,
         exit_code: ServiceExitCode::Win32(0),
         checkpoint: 0,
         wait_hint: Duration::ZERO,

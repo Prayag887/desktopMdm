@@ -3,7 +3,10 @@ use std::{env, sync::Arc};
 use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
 use axum::{
     Json, Router,
-    extract::{Form, Path, Request, State},
+    extract::{
+        Form, Path, Request, State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
+    },
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
@@ -31,6 +34,8 @@ pub struct AppState {
     admin_password: Arc<str>,
     enrollment_key: Arc<str>,
     pin_hash_slots: Arc<tokio::sync::Semaphore>,
+    command_signals: tokio::sync::broadcast::Sender<String>,
+    socket_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
@@ -60,6 +65,8 @@ impl AppState {
             admin_password: admin_password.into(),
             enrollment_key: enrollment_key.into(),
             pin_hash_slots: Arc::new(tokio::sync::Semaphore::new(1)),
+            command_signals: tokio::sync::broadcast::channel(128).0,
+            socket_slots: Arc::new(tokio::sync::Semaphore::new(256)),
         })
     }
 }
@@ -96,6 +103,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/enroll", post(enroll))
         .route("/api/v1/devices/{id}/health", post(report_health))
         .route("/api/v1/devices/{id}/commands", get(poll_commands))
+        .route("/api/v1/devices/{id}/socket", get(command_socket))
         .route(
             "/api/v1/devices/{id}/commands/{command_id}/complete",
             post(complete_command),
@@ -260,7 +268,7 @@ async fn device_detail(
         "Enable managed mode"
     };
     let content = format!(
-        "<nav><a href=\"/\">← All devices</a><span>Device console</span></nav><header class=\"device-hero\"><div><span class=\"eyebrow\">Windows endpoint</span><h1>{}</h1><p class=\"mono\">Serial {}</p></div><div><span class=\"eyebrow\">Policy target</span><span class=\"pill {} large\">{mode_label}</span><p>Last seen {}</p></div></header><main hx-get=\"/devices/{id}/status\" hx-trigger=\"every 30s\" hx-swap=\"none\"><div id=\"notice\"></div><div id=\"health-panel\">{health_panel}</div><section><div class=\"section-title\"><div><h2>Remote controls</h2><p>Commands are queued, audited, and acknowledged by the Windows service.</p></div></div><div class=\"control-grid\"><article><span class=\"control-icon\">↗</span><h3>Payment reminder</h3><p>Display a payment notice in the active Windows session.</p><button hx-post=\"/devices/{id}/commands/remind\" hx-target=\"#notice\">Send reminder</button></article><article><span class=\"control-icon\">••</span><h3>Managed lock PIN</h3><p>Set the app restriction PIN. This never changes a Windows account password.</p><form class=\"stack\" hx-post=\"/devices/{id}/commands/pin\" hx-target=\"#notice\"><input aria-label=\"New managed PIN\" name=\"pin\" type=\"password\" inputmode=\"numeric\" minlength=\"4\" maxlength=\"12\" placeholder=\"4–12 digit PIN\" required><input aria-label=\"Confirm managed PIN\" name=\"confirm_pin\" type=\"password\" inputmode=\"numeric\" minlength=\"4\" maxlength=\"12\" placeholder=\"Confirm PIN\" required><button>Queue PIN update</button></form></article><article><span class=\"control-icon\">⚙</span><h3>Management mode</h3><p>Managed mode applies policy. Maintenance mode clears restrictions while keeping health and recovery online.</p><form hx-post=\"/devices/{id}/management\" hx-target=\"#notice\"><input type=\"hidden\" name=\"enabled\" value=\"{next_mode}\"><button class=\"secondary\">{mode_action}</button></form></article><article><span class=\"control-icon\">○</span><h3>Clear restrictions</h3><p>Remove the managed PIN and local restrictions without uninstalling the recovery agent.</p><button class=\"danger\" hx-post=\"/devices/{id}/commands/clear-restrictions\" hx-target=\"#notice\" hx-confirm=\"Clear managed restrictions on this device?\">Clear restrictions</button></article><article class=\"disabled-card\"><span class=\"control-icon\">BIOS</span><h3>Firmware password</h3><p>Requires an encrypted per-device secret and an approved Dell, HP, or Lenovo enterprise adapter.</p><button disabled>OEM adapter required</button></article><article class=\"disabled-card\"><span class=\"control-icon\">WIN</span><h3>Windows account password</h3><p>Requires an approved local account, encrypted secret delivery, and an administrator recovery policy.</p><button disabled>Account policy required</button></article></div></section><section><div class=\"section-title\"><div><h2>Payment plan</h2><p>Installment schedule and payment state.</p></div></div><form class=\"plan-form\" method=\"post\" action=\"/devices/{id}/plans\"><input name=\"amount\" inputmode=\"decimal\" placeholder=\"Amount e.g. 2500.00\" required><input name=\"currency\" value=\"NPR\" minlength=\"3\" maxlength=\"3\" required><input name=\"periods\" type=\"number\" min=\"1\" max=\"120\" placeholder=\"Periods\" required><input name=\"first_due\" type=\"date\" required><button>Create plan</button></form><div class=\"table-wrap\"><table><tr><th>#</th><th>Amount</th><th>Due</th><th>Status</th></tr>{payments}</table></div></section><div id=\"command-panel\"><section><div class=\"section-title\"><div><h2>Recent commands</h2><p>Latest audited actions and device acknowledgements.</p></div></div>{command_history}</section></div></main>",
+        "<nav><a href=\"/\">← All devices</a><span>Device console</span></nav><header class=\"device-hero\"><div><span class=\"eyebrow\">Windows endpoint</span><h1>{}</h1><p class=\"mono\">Serial {}</p></div><div><span class=\"eyebrow\">Policy target</span><span class=\"pill {} large\">{mode_label}</span><p>Last seen {}</p></div></header><main hx-get=\"/devices/{id}/status\" hx-trigger=\"every 30s\" hx-swap=\"none\" hx-disinherit=\"hx-swap\"><div id=\"notice\" role=\"status\" aria-live=\"polite\"></div><div id=\"health-panel\">{health_panel}</div><section><div class=\"section-title\"><div><h2>Remote controls</h2><p>Commands are stored until acknowledged. Connected PCs receive socket signals; offline PCs apply pending changes when they reconnect.</p></div></div><div class=\"control-grid\"><article><span class=\"control-icon\">↗</span><h3>Payment reminder</h3><p>Display a payment notice in the active Windows session.</p><button hx-post=\"/devices/{id}/commands/remind\" hx-target=\"#notice\">Send reminder</button></article><article><span class=\"control-icon\">••</span><h3>Managed lock PIN</h3><p>Set the app restriction PIN. This never changes a Windows account password.</p><form class=\"stack\" hx-post=\"/devices/{id}/commands/pin\" hx-target=\"#notice\"><input aria-label=\"New managed PIN\" name=\"pin\" type=\"password\" inputmode=\"numeric\" minlength=\"4\" maxlength=\"12\" placeholder=\"4–12 digit PIN\" required><input aria-label=\"Confirm managed PIN\" name=\"confirm_pin\" type=\"password\" inputmode=\"numeric\" minlength=\"4\" maxlength=\"12\" placeholder=\"Confirm PIN\" required><button>Queue PIN update</button></form></article><article><span class=\"control-icon\">⚙</span><h3>Management mode</h3><p>Managed mode applies policy. Maintenance mode clears restrictions while keeping health and recovery online.</p><form hx-post=\"/devices/{id}/management\" hx-target=\"#notice\"><input type=\"hidden\" name=\"enabled\" value=\"{next_mode}\"><button class=\"secondary\">{mode_action}</button></form></article><article><span class=\"control-icon\">○</span><h3>Clear restrictions</h3><p>Remove the managed PIN and local restrictions without uninstalling the recovery agent.</p><button class=\"danger\" hx-post=\"/devices/{id}/commands/clear-restrictions\" hx-target=\"#notice\" hx-confirm=\"Clear managed restrictions on this device?\">Clear restrictions</button></article><article class=\"disabled-card\"><span class=\"control-icon\">BIOS</span><h3>Firmware password</h3><p>Requires an encrypted per-device secret and an approved Dell, HP, or Lenovo enterprise adapter.</p><button disabled>OEM adapter required</button></article><article class=\"disabled-card\"><span class=\"control-icon\">WIN</span><h3>Windows account password</h3><p>Requires an approved local account, encrypted secret delivery, and an administrator recovery policy.</p><button disabled>Account policy required</button></article></div></section><section><div class=\"section-title\"><div><h2>Payment plan</h2><p>Installment schedule and payment state.</p></div></div><form class=\"plan-form\" method=\"post\" action=\"/devices/{id}/plans\" hx-post=\"/devices/{id}/plans\" hx-target=\"#notice\"><label>Installment amount<input name=\"amount\" inputmode=\"decimal\" placeholder=\"Amount e.g. 2500.00\" required></label><label>Currency<input name=\"currency\" value=\"NPR\" minlength=\"3\" maxlength=\"3\" required></label><label>Number of periods<input name=\"periods\" type=\"number\" min=\"1\" max=\"120\" placeholder=\"Periods\" required></label><label>First due date<input name=\"first_due\" type=\"date\" required></label><button>Create plan</button></form><div class=\"table-wrap\"><table><tr><th>#</th><th>Amount</th><th>Due</th><th>Status</th></tr>{payments}</table></div></section><div id=\"command-panel\"><section><div class=\"section-title\"><div><h2>Recent commands</h2><p>Latest audited actions and device acknowledgements.</p></div></div>{command_history}</section></div></main>",
         escape(&name),
         escape(&serial),
         if management_enabled { "good" } else { "warn" },
@@ -366,7 +374,14 @@ async fn create_plan(
     if let Err(error) = tx.commit().await {
         return internal(error);
     }
-    axum::response::Redirect::to(&format!("/devices/{id}")).into_response()
+    if headers
+        .get("hx-request")
+        .is_some_and(|value| value == "true")
+    {
+        Html(notice("Payment plan created", "success")).into_response()
+    } else {
+        axum::response::Redirect::to(&format!("/devices/{id}")).into_response()
+    }
 }
 
 async fn mark_paid(
@@ -392,6 +407,14 @@ async fn mark_paid(
     .await;
     match result {
         Ok(done) if done.rows_affected() == 1 => {
+            let payment = match sqlx::query("SELECT amount_minor, currency, due_on FROM payment_periods WHERE device_id=? AND sequence=?")
+                .bind(&id).bind(sequence).fetch_one(&mut *tx).await {
+                Ok(row) => row,
+                Err(error) => return internal(error),
+            };
+            let amount: i64 = payment.get("amount_minor");
+            let currency: String = payment.get("currency");
+            let due: String = payment.get("due_on");
             if let Err(error) = audit(
                 &mut tx,
                 "admin",
@@ -407,7 +430,11 @@ async fn mark_paid(
                 return internal(error);
             }
             Html(format!(
-                "<tr><td>{sequence}</td><td colspan=\"2\">Payment recorded</td><td>Paid</td></tr>"
+                "<tr><td>{sequence}</td><td>{}.{:02} {}</td><td>{}</td><td>Paid</td></tr>",
+                amount / 100,
+                amount.unsigned_abs() % 100,
+                escape(&currency),
+                escape(&due)
             ))
             .into_response()
         }
@@ -425,8 +452,8 @@ async fn send_reminder(
         return unauthorized();
     }
     let command = DeviceCommand::ShowPaymentReminder { title: "Payment reminder".into(), message: "Your EMI payment is due. Please contact the financing administrator if you have already paid.".into() };
-    match queue_command(&state.db, &id, command, "admin").await {
-        Ok(()) => Html("Reminder queued".to_owned()).into_response(),
+    match queue_command(&state, &id, command, "admin").await {
+        Ok(()) => Html(notice("Reminder queued", "success")).into_response(),
         Err(error) => internal(error),
     }
 }
@@ -475,7 +502,7 @@ async fn set_managed_pin(
         Err(error) => return internal(error),
     };
     match queue_command(
-        &state.db,
+        &state,
         &id,
         DeviceCommand::SetManagedLockPin { pin_hash: hash },
         "admin",
@@ -496,7 +523,7 @@ async fn clear_restrictions(
         return unauthorized();
     }
     match queue_command(
-        &state.db,
+        &state,
         &id,
         DeviceCommand::ClearManagedRestrictions,
         "admin",
@@ -558,6 +585,7 @@ async fn set_management(
     if let Err(error) = tx.commit().await {
         return internal(error);
     }
+    let _ = state.command_signals.send(id.clone());
     Html(notice(
         if form.enabled {
             "Managed mode update queued; waiting for device acknowledgement"
@@ -643,6 +671,69 @@ struct QueuedCommand {
     command: DeviceCommand,
 }
 
+async fn command_socket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    if !is_agent(&state, &headers, &id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Ok(permit) = Arc::clone(&state.socket_slots).try_acquire_owned() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    // Subscribe before upgrading so concurrent commits cannot fall into a gap.
+    let signals = state.command_signals.subscribe();
+    upgrade
+        .max_message_size(1024)
+        .max_frame_size(1024)
+        .on_upgrade(move |socket| async move {
+            let _permit = permit;
+            serve_command_socket(socket, state, headers, id, signals).await;
+        })
+        .into_response()
+}
+
+async fn serve_command_socket(
+    mut socket: WebSocket,
+    state: AppState,
+    headers: HeaderMap,
+    id: String,
+    mut signals: tokio::sync::broadcast::Receiver<String>,
+) {
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(20));
+    loop {
+        let sync = tokio::select! {
+            _ = heartbeat.tick() => {
+                if !is_agent(&state, &headers, &id).await { break; }
+                true
+            }
+            signal = signals.recv() => match signal {
+                Ok(device) => device == id,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            },
+            message = socket.recv() => match message {
+                Some(Ok(Message::Close(_)) | Err(_)) | None => break,
+                Some(Ok(_)) => false,
+            },
+        };
+        if sync
+            && !matches!(
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    socket.send(Message::Text("sync".into()))
+                )
+                .await,
+                Ok(Ok(()))
+            )
+        {
+            break;
+        }
+    }
+}
+
 async fn poll_commands(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -688,12 +779,12 @@ async fn complete_command(
 }
 
 async fn queue_command(
-    db: &SqlitePool,
+    state: &AppState,
     device_id: &str,
     command: DeviceCommand,
     actor: &str,
 ) -> anyhow::Result<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = state.db.begin().await?;
     insert_command(&mut tx, device_id, &command).await?;
     audit(
         &mut tx,
@@ -704,6 +795,7 @@ async fn queue_command(
     )
     .await?;
     tx.commit().await?;
+    let _ = state.command_signals.send(device_id.to_owned());
     Ok(())
 }
 
