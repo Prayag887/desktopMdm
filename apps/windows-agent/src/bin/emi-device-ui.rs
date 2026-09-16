@@ -9,6 +9,8 @@ fn main() {
 mod windows_app {
     use eframe::egui::{self, Color32, RichText};
     use emi_core::{BiosProvider, DeviceHealth};
+    use emi_device_agent::prank::PrankSession;
+    use qrcode::{Color, QrCode};
     use std::os::windows::process::CommandExt as _;
     use std::{
         fs,
@@ -18,6 +20,7 @@ mod windows_app {
         thread,
         time::{Duration, Instant},
     };
+    use zeroize::{Zeroize, Zeroizing};
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -27,6 +30,14 @@ mod windows_app {
         status: String,
         result_rx: Option<Receiver<String>>,
         last_refresh: Instant,
+        tab: usize,
+        current_password: Zeroizing<String>,
+        new_password: Zeroizing<String>,
+        confirm_password: Zeroizing<String>,
+        lan_ip: String,
+        consent: bool,
+        prank: Option<PrankSession>,
+        qr: Option<egui::TextureHandle>,
     }
 
     impl DeviceApp {
@@ -37,7 +48,155 @@ mod windows_app {
                 status: "Standalone mode — no server or enrollment required".into(),
                 result_rx: None,
                 last_refresh: Instant::now(),
+                tab: 0,
+                current_password: Zeroizing::new(String::new()),
+                new_password: Zeroizing::new(String::new()),
+                confirm_password: Zeroizing::new(String::new()),
+                lan_ip: local_ip_address::local_ip()
+                    .map_or_else(|_| "127.0.0.1".into(), |ip| ip.to_string()),
+                consent: false,
+                prank: None,
+                qr: None,
             }
+        }
+
+        fn clear_passwords(&mut self) {
+            self.current_password.zeroize();
+            self.new_password.zeroize();
+            self.confirm_password.zeroize();
+        }
+
+        fn render_firmware(&mut self, ui: &mut egui::Ui) {
+            ui.heading("Firmware credentials");
+            ui.label("Prepare a BIOS password change");
+            ui.add_space(12.0);
+            ui.colored_label(
+                Color32::from_rgb(230, 180, 100),
+                "Not connected to a supported OEM adapter",
+            );
+            ui.label("Firmware passwords cannot be read back. Enter the current password only if you know it. Your exact manufacturer and model are required before changes can be enabled.");
+            ui.add_space(16.0);
+            for (label, value) in [
+                ("Current BIOS password", &mut *self.current_password),
+                ("New BIOS password", &mut *self.new_password),
+                ("Confirm new password", &mut *self.confirm_password),
+            ] {
+                ui.label(label);
+                ui.add(
+                    egui::TextEdit::singleline(value)
+                        .password(true)
+                        .desired_width(360.0)
+                        .char_limit(128),
+                );
+                ui.add_space(10.0);
+            }
+            if !self.confirm_password.is_empty() && self.new_password != self.confirm_password {
+                ui.colored_label(Color32::LIGHT_RED, "New passwords do not match.");
+            }
+            ui.horizontal(|ui| {
+                ui.add_enabled(false, egui::Button::new("Apply BIOS password change"));
+                if ui.button("Clear fields").clicked() {
+                    self.clear_passwords();
+                }
+            });
+            ui.small("Fields are masked and never saved, logged or sent to the QR page. Leaving this tab clears them. No firmware change is performed in this build.");
+        }
+
+        fn render_prank(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
+            ui.heading("Blue-screen simulation");
+            ui.label("A temporary visual prank — Windows keeps running normally.");
+            ui.add_space(16.0);
+            ui.label("PC's private LAN IPv4 address");
+            ui.text_edit_singleline(&mut self.lan_ip);
+            ui.small("Phone and PC must share a trusted network. Windows Firewall may require approval for this app on a Private network. No firewall rules are changed automatically. 127.0.0.1 works only on this PC.");
+            ui.add_space(16.0);
+            ui.checkbox(
+                &mut self.consent,
+                "I have permission to run this harmless simulation on this PC",
+            );
+            let mut enabled = false;
+            if ui
+                .add_enabled(
+                    self.consent,
+                    egui::Checkbox::new(&mut enabled, "Show simulated blue screen"),
+                )
+                .changed()
+                && enabled
+            {
+                match self
+                    .lan_ip
+                    .parse()
+                    .map_err(|_| "Enter a valid IPv4 address".to_string())
+                    .and_then(|ip| PrankSession::start(ip).map_err(|error| error.to_string()))
+                {
+                    Ok(session) => match QrCode::new(session.url()) {
+                        Ok(code) => {
+                            let width = code.width();
+                            let side = width + 8;
+                            let mut image = egui::ColorImage::new([side, side], Color32::WHITE);
+                            for y in 0..width {
+                                for x in 0..width {
+                                    if code[(x, y)] == Color::Dark {
+                                        image[(x + 4, y + 4)] = Color32::BLACK;
+                                    }
+                                }
+                            }
+                            self.qr = Some(context.load_texture(
+                                "dismiss-qr",
+                                image,
+                                egui::TextureOptions::NEAREST,
+                            ));
+                            self.prank = Some(session);
+                            context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+                        }
+                        Err(error) => self.status = format!("QR generation failed: {error}"),
+                    },
+                    Err(error) => self.status = format!("Simulation could not start: {error}"),
+                }
+            }
+            ui.add_space(12.0);
+            ui.label("Scan the QR and tap Dismiss, press Escape, close the app, or reboot to exit. Automatic safety timeout: 5 minutes. Restart always begins unchecked.");
+            ui.small("This does not crash Windows, block recovery keys, change BIOS settings or prevent switching apps.");
+        }
+
+        fn render_blue_screen(&self, context: &egui::Context) {
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::NONE
+                        .fill(Color32::from_rgb(0, 100, 180))
+                        .inner_margin(40.0),
+                )
+                .show(context, |ui| {
+                    ui.visuals_mut().override_text_color = Some(Color32::WHITE);
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.label(RichText::new(":(").size(100.0));
+                        ui.add_space(20.0);
+                        ui.label(RichText::new("Your PC ran into a pretend problem.").size(32.0));
+                        ui.label(
+                            RichText::new("No data is being collected. Windows has not crashed.")
+                                .size(22.0),
+                        );
+                        ui.add_space(28.0);
+                        ui.label("SIMULATED STOP CODE: JUST_A_PRANK");
+                        ui.add_space(24.0);
+                        ui.horizontal_wrapped(|ui| {
+                            if let Some(qr) = &self.qr {
+                                ui.add(
+                                    egui::Image::new(qr)
+                                        .fit_to_exact_size(egui::vec2(220.0, 220.0)),
+                                );
+                            }
+                            ui.vertical(|ui| {
+                                ui.heading("Scan to return to the app");
+                                ui.label("Open the link on a phone on the same network,");
+                                ui.label("then tap Dismiss simulated blue screen.");
+                                ui.add_space(12.0);
+                                ui.label("Emergency exit: Escape · Restart also clears it");
+                                ui.label("Automatically ends after 5 minutes");
+                            });
+                        });
+                    });
+                });
         }
 
         fn refresh_health(&mut self) {
@@ -147,6 +306,22 @@ mod windows_app {
 
     impl eframe::App for DeviceApp {
         fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+            if let Some(session) = &self.prank {
+                context.request_repaint_after(Duration::from_millis(100));
+                if session.dismissed()
+                    || session.expired()
+                    || context.input(|input| input.key_pressed(egui::Key::Escape))
+                {
+                    self.prank = None;
+                    self.qr = None;
+                    self.consent = false;
+                    self.status = "Simulation ended. The checkbox is reset.".into();
+                    context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                } else {
+                    self.render_blue_screen(context);
+                    return;
+                }
+            }
             context.request_repaint_after(Duration::from_secs(2));
             if self.last_refresh.elapsed() >= Duration::from_secs(5) {
                 self.health = read_health();
@@ -173,6 +348,18 @@ mod windows_app {
                     ui.add_space(10.0);
                     ui.heading(RichText::new("EMI Device").size(28.0));
                     ui.label("Standalone desktop companion");
+                    ui.add_space(12.0);
+                    let previous = self.tab;
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.tab, 0, "Overview");
+                        ui.selectable_value(&mut self.tab, 1, "BIOS passwords");
+                        ui.selectable_value(&mut self.tab, 2, "Prank mode");
+                    });
+                    if previous == 1 && self.tab != 1 { self.clear_passwords(); }
+                    ui.separator();
+                    if self.tab == 1 { self.render_firmware(ui); }
+                    else if self.tab == 2 { self.render_prank(ui, context); }
+                    else {
                     ui.add_space(16.0);
                     let (label, color) = if self.service_running {
                         ("Local health service running", Color32::from_rgb(30, 150, 85))
@@ -185,10 +372,11 @@ mod windows_app {
                         if ui.add_enabled(self.result_rx.is_none(), egui::Button::new("Refresh device health (admin)")).clicked() { self.refresh_health(); }
                         if ui.button("Reload status").clicked() { self.reload(); self.status = "Local status reloaded".into(); }
                     });
+                    }
                     ui.add_space(12.0);
                     ui.label(&self.status);
                     ui.separator();
-                    ui.small("All device data stays on this PC. No web portal, backend, remote commands, or socket connection. An administrator can uninstall the companion normally.");
+                    ui.small("Local-first Rust desktop app. QR dismissal uses a temporary one-time LAN link only during the simulation. An administrator can uninstall normally.");
                 });
             });
         }
@@ -220,14 +408,17 @@ mod windows_app {
     pub fn run() -> eframe::Result<()> {
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([680.0, 600.0])
+                .with_inner_size([840.0, 720.0])
                 .with_min_inner_size([560.0, 450.0]),
             ..Default::default()
         };
         eframe::run_native(
             "EMI Device",
             options,
-            Box::new(|_context| Ok(Box::new(DeviceApp::load()))),
+            Box::new(|context| {
+                context.egui_ctx.set_visuals(egui::Visuals::dark());
+                Ok(Box::new(DeviceApp::load()))
+            }),
         )
     }
 
@@ -244,6 +435,28 @@ mod windows_app {
                 egui::CentralPanel::default().show(context, |ui| app.render_health(ui));
             });
             assert!(!output.shapes.is_empty());
+        }
+
+        #[test]
+        fn firmware_and_simulation_render_and_restart_is_unchecked() {
+            let mut app = DeviceApp::load();
+            assert!(app.prank.is_none());
+            assert!(!app.consent);
+            let context = egui::Context::default();
+            let output = context.run(egui::RawInput::default(), |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    app.render_firmware(ui);
+                    app.render_prank(ui, context);
+                });
+            });
+            assert!(!output.shapes.is_empty());
+            let output = context.run(egui::RawInput::default(), |context| {
+                app.render_blue_screen(context)
+            });
+            assert!(!output.shapes.is_empty());
+            app.current_password.push_str("test-only");
+            app.clear_passwords();
+            assert!(app.current_password.is_empty());
         }
     }
 }
