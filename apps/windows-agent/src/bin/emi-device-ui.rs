@@ -187,6 +187,11 @@ mod windows_app {
                 )
                 .show(context, |ui| {
                     ui.visuals_mut().override_text_color = Some(Color32::WHITE);
+                    if ui.button("Exit blue screen mode").clicked() {
+                        self.end_blue_screen(context);
+                        return;
+                    }
+                    ui.add_space(16.0);
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.label(RichText::new(":(").size(100.0));
                         ui.add_space(20.0);
@@ -215,10 +220,6 @@ mod windows_app {
                             });
                         });
                     });
-                    ui.add_space(16.0);
-                    if ui.button("Exit blue screen mode").clicked() {
-                        self.end_blue_screen(context);
-                    }
                 });
         }
 
