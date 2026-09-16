@@ -1,6 +1,3 @@
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-
 CREATE TABLE IF NOT EXISTS devices (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -45,4 +42,3 @@ CREATE TABLE IF NOT EXISTS audit_events (
 
 CREATE INDEX IF NOT EXISTS idx_commands_pending ON commands(device_id, completed_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_payments_device ON payment_periods(device_id, sequence);
-

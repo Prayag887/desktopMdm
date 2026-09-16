@@ -13,7 +13,10 @@ use emi_core::{DeviceCommand, DeviceHealth};
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
+use sqlx::{
+    Row, SqlitePool,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
+};
 use std::{fmt::Write as _, str::FromStr};
 use tower_http::{compression::CompressionLayer, limit::RequestBodyLimitLayer, trace::TraceLayer};
 use uuid::Uuid;
@@ -36,9 +39,15 @@ impl AppState {
         admin_password: String,
         enrollment_key: String,
     ) -> anyhow::Result<Self> {
+        let options = SqliteConnectOptions::from_str(database_url)?
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .busy_timeout(std::time::Duration::from_secs(5));
         let db = SqlitePoolOptions::new()
-            .max_connections(8)
-            .connect(database_url)
+            .max_connections(4)
+            .connect_with(options)
             .await?;
         sqlx::migrate!("./migrations").run(&db).await?;
         Ok(Self {

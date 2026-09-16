@@ -1,7 +1,7 @@
 services:
   control-plane:
     build: .
-    ports: ["3000:3000"]
+    ports: ["${CONTROL_PLANE_PORT:-3000}:3000"]
     environment:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
       ENROLLMENT_KEY: ${ENROLLMENT_KEY:?set ENROLLMENT_KEY}
@@ -16,4 +16,3 @@ services:
     restart: unless-stopped
 volumes:
   emi-data:
-
