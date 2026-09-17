@@ -1,5 +1,7 @@
 //! The fullscreen lock screen, keyboard suppression, and owner-token recovery.
 
+use std::time::{Duration, Instant};
+
 use chrono::Utc;
 use eframe::egui::{self, Color32, RichText};
 use emi_core::recovery::{parse_public_key_hex, verify_unlock};
@@ -7,8 +9,52 @@ use zeroize::Zeroize as _;
 
 use super::app::{DeviceApp, OWNER_PUBLIC_KEY_HEX};
 use super::system::{set_task_manager_disabled, write_last_counter};
+use crate::bluescreen::BluescreenSession;
 
 impl DeviceApp {
+    /// Per-frame handling while a lock screen is showing: fullscreen + always-on-
+    /// top on entry, Task Manager disabled, a 5-minute hard auto-close safety
+    /// valve, focus snap-back if a switch slipped past the keyboard hook, keyboard
+    /// suppression, close veto, and the lock screen itself.
+    pub(crate) fn tick_locked(&mut self, context: &egui::Context) {
+        context.request_repaint_after(Duration::from_millis(100));
+        // One-shot on entering a lock: start the timer, force fullscreen and
+        // always-on-top, and disable Task Manager for this user (registry policy;
+        // re-enabled on unlock).
+        let started = *self.lock_started.get_or_insert_with(|| {
+            context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+            context.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                egui::WindowLevel::AlwaysOnTop,
+            ));
+            set_task_manager_disabled(true);
+            Instant::now()
+        });
+        // Safety valve: hard auto-close after 5 minutes so a device can never be
+        // permanently stuck. Restoring Task Manager first is best-effort.
+        if started.elapsed() >= Duration::from_secs(300) {
+            set_task_manager_disabled(false);
+            std::process::exit(0);
+        }
+        // If focus was stolen (e.g. an Alt+Tab that slipped past the hook), snap
+        // the lock window straight back to the foreground, on top and fullscreen.
+        // Runs every ~100 ms, so a switch can never persist.
+        if !context.input(|input| input.viewport().focused.unwrap_or(true)) {
+            context.send_viewport_cmd(egui::ViewportCommand::Focus);
+            context.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                egui::WindowLevel::AlwaysOnTop,
+            ));
+            context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+        }
+        self.suppress_keyboard(context);
+        // Veto Alt+F4 / title-bar close / window-close in every lock mode.
+        // Window-scoped only: OS-global Alt+Tab / Win / Ctrl+Shift+Esc are handled
+        // by the keyboard_guard hook and, robustly, by WEKF.
+        if context.input(|input| input.viewport().close_requested()) {
+            context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.status = "Close is disabled while the device is restricted.".into();
+        }
+        self.render_blue_screen(context);
+    }
     pub(crate) fn end_blue_screen(&mut self, context: &egui::Context) {
         self.bluescreen = None;
         self.qr = None;
@@ -21,10 +67,13 @@ impl DeviceApp {
         // Remove-PaymentRestriction.ps1.
         self.enforced = false;
         self.manual_lock = false;
-        self.fullscreen_applied = false;
+        self.lock_started = None;
         // Re-enable Task Manager that the lock disabled for this user.
         set_task_manager_disabled(false);
         self.status = "Payment-restriction mode ended. The checkbox is reset.".into();
+        context.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+            egui::WindowLevel::Normal,
+        ));
         context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
     }
 
@@ -47,13 +96,14 @@ impl DeviceApp {
     }
 
     pub(crate) fn blue_screen_active(&mut self, context: &egui::Context) -> bool {
-        // The demo (QR) session can auto-dismiss or time out. Enforced mode never
-        // auto-releases — it stays locked until a token or signed policy clears it.
+        // A dismissed QR session is the owner's controlled release. Timeouts do
+        // NOT unlock — the 5-minute safety valve closes the whole app instead, so
+        // the only in-place exits are an owner token or dismissal, plus a restart.
         if !self.enforced
             && self
                 .bluescreen
                 .as_ref()
-                .is_some_and(|session| session.dismissed() || session.expired())
+                .is_some_and(BluescreenSession::dismissed)
         {
             self.end_blue_screen(context);
         }
@@ -106,18 +156,9 @@ impl DeviceApp {
             )
             .show(context, |ui| {
                 ui.visuals_mut().override_text_color = Some(Color32::WHITE);
-                // The Exit button exists only in the reversible demo. In enforced
-                // mode the customer cannot close the screen; release is via an
-                // owner token, signed policy, or an administrator signing into
-                // their own (never-restricted) account.
-                if !self.enforced
-                    && ui
-                        .button("Technician exit (authorized administrator)")
-                        .clicked()
-                {
-                    self.end_blue_screen(context);
-                    return;
-                }
+                // No Exit button in any mode. The only ways out are a valid owner
+                // unlock token, the QR dismissal, a restart, or the 5-minute
+                // safety auto-close. There is deliberately no click-to-leave.
                 ui.add_space(20.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.label(
@@ -158,7 +199,10 @@ impl DeviceApp {
                                 )
                                 .color(Color32::from_rgb(143, 198, 255)),
                             );
-                            ui.label("Restart clears this mode · Ends after 5 minutes");
+                            ui.label(
+                                "Only an owner token or a restart releases this · \
+                                 the app auto-closes after 5 minutes",
+                            );
                         });
                     });
                     ui.add_space(24.0);

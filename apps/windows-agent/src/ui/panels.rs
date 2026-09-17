@@ -110,24 +110,24 @@ impl DeviceApp {
 
         ui.add_space(20.0);
         ui.separator();
-        self.render_manual_lock(ui, context);
+        self.render_manual_lock(ui);
     }
 
     /// Administrator controls to pick and apply lock methods by hand.
-    fn render_manual_lock(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
+    fn render_manual_lock(&mut self, ui: &mut egui::Ui) {
         ui.heading("Manual lock controls");
         ui.small(
-            "Session lock is in-app and reversible with Exit. OS lockdown runs the \
-             provisioning script elevated and needs an administrator plus Enterprise/IoT \
-             for the keyboard-filter and AppLocker layers. Test on a VM only.",
+            "Session lock has no Exit button: it clears only via an owner unlock token, a \
+             restart, or the 5-minute auto-close. OS lockdown runs the provisioning script \
+             elevated and needs an administrator plus Enterprise/IoT for the keyboard-filter \
+             and AppLocker layers. Test on a VM only.",
         );
         ui.add_space(10.0);
 
-        if ui.button("Lock this session now (reversible)").clicked() {
+        if ui.button("Lock this session now").clicked() {
             self.manual_lock = true;
-            self.fullscreen_applied = false;
-            context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
-            self.status = "Session locked. Use the Exit or a recovery token to leave.".into();
+            self.status =
+                "Locked. Only an owner token, a restart, or the 5-minute auto-close leaves.".into();
         }
 
         ui.add_space(14.0);

@@ -10,7 +10,7 @@ use zeroize::Zeroizing;
 
 use super::system::{
     current_user_is_admin, launched_as_user_shell, read_device_id, read_health, read_last_counter,
-    service_is_running, set_task_manager_disabled,
+    service_is_running,
 };
 use crate::bluescreen::BluescreenSession;
 
@@ -41,7 +41,7 @@ pub(crate) struct DeviceApp {
     pub(crate) recovery_input: Zeroizing<String>,
     pub(crate) recovery_focused: bool,
     pub(crate) enforced: bool,
-    pub(crate) fullscreen_applied: bool,
+    pub(crate) lock_started: Option<Instant>,
     pub(crate) manual_lock: bool,
     pub(crate) device_id: Option<Uuid>,
     pub(crate) last_counter: u64,
@@ -76,7 +76,7 @@ impl DeviceApp {
             recovery_input: Zeroizing::new(String::new()),
             recovery_focused: false,
             enforced,
-            fullscreen_applied: false,
+            lock_started: None,
             manual_lock: false,
             device_id: read_device_id(),
             last_counter: read_last_counter(),
@@ -102,23 +102,7 @@ impl eframe::App for DeviceApp {
         // lock screen is showing.
         crate::keyboard_guard::set_locked(locked);
         if locked {
-            context.request_repaint_after(Duration::from_millis(100));
-            // One-shot on entering a lock: force fullscreen and disable Task
-            // Manager for this user (registry policy; re-enabled on unlock).
-            if !self.fullscreen_applied {
-                context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
-                set_task_manager_disabled(true);
-                self.fullscreen_applied = true;
-            }
-            self.suppress_keyboard(context);
-            // Veto Alt+F4 / title-bar close / window-close in every lock mode.
-            // Window-scoped only: it CANNOT stop OS-global Alt+Tab / Win /
-            // Ctrl+Shift+Esc — the keyboard_guard hook and WEKF handle those.
-            if context.input(|input| input.viewport().close_requested()) {
-                context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.status = "Close is disabled while the device is restricted.".into();
-            }
-            self.render_blue_screen(context);
+            self.tick_locked(context);
             return;
         }
         context.request_repaint_after(Duration::from_secs(2));
