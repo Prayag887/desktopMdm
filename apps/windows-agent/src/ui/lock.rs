@@ -18,10 +18,10 @@ impl DeviceApp {
     /// suppression, close veto, and the lock screen itself.
     pub(crate) fn tick_locked(&mut self, context: &egui::Context) {
         context.request_repaint_after(Duration::from_millis(100));
-        // One-shot on entering a lock: start the timer, force fullscreen and
-        // always-on-top, and disable Task Manager for this user (registry policy;
-        // re-enabled on unlock).
-        let started = *self.lock_started.get_or_insert_with(|| {
+        // One-shot on entering a lock: force fullscreen and always-on-top, and
+        // disable Task Manager for this user (registry policy; re-enabled on
+        // unlock). No auto-close — the only exit is the unlock word.
+        self.lock_started.get_or_insert_with(|| {
             context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
             context.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
                 egui::WindowLevel::AlwaysOnTop,
@@ -29,12 +29,6 @@ impl DeviceApp {
             set_task_manager_disabled(true);
             Instant::now()
         });
-        // Safety valve: hard auto-close after 5 minutes so a device can never be
-        // permanently stuck. Restoring Task Manager first is best-effort.
-        if started.elapsed() >= Duration::from_secs(300) {
-            set_task_manager_disabled(false);
-            std::process::exit(0);
-        }
         // If focus was stolen (e.g. an Alt+Tab that slipped past the hook), snap
         // the lock window straight back to the foreground, on top and fullscreen.
         // Runs every ~100 ms, so a switch can never persist.
@@ -244,10 +238,7 @@ impl DeviceApp {
                                 RichText::new("The physical keyboard is disabled.")
                                     .color(Color32::from_rgb(143, 198, 255)),
                             );
-                            ui.label(
-                                "Type the unlock word or restart to release this · \
-                                 the app auto-closes after 5 minutes",
-                            );
+                            ui.label("Type the unlock word to release this device.");
                         });
                     });
                     ui.add_space(24.0);
@@ -283,7 +274,7 @@ impl DeviceApp {
                     ui.small(
                         "The physical keyboard is fully disabled while locked; type the unlock \
                          word with the on-screen keys above. Ctrl+Alt+Del and Win+L are OS-\
-                         protected; the power button always shuts the device down.",
+                         protected. A restart just re-locks; the unlock word is the only exit.",
                     );
                 });
             });

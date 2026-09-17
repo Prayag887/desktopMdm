@@ -109,7 +109,7 @@ impl DeviceApp {
             }
         }
         ui.add_space(12.0);
-        ui.label("There is no Exit button while locked. The only ways out are a valid owner unlock token, restarting the PC, or the automatic 5-minute close. Restart always begins unchecked.");
+        ui.label("There is no Exit button while locked. The only way out is typing the unlock word on the on-screen keyboard. A restart just re-locks on boot.");
         ui.small("This does not crash Windows, block OS recovery keys, change BIOS settings, or install a driver. The recovery field stays typable.");
 
         ui.add_space(20.0);
@@ -121,10 +121,10 @@ impl DeviceApp {
     fn render_manual_lock(&mut self, ui: &mut egui::Ui) {
         ui.heading("Manual lock controls");
         ui.small(
-            "Session lock has no Exit button: it clears only via an owner unlock token, a \
-             restart, or the 5-minute auto-close. OS lockdown runs the provisioning script \
-             elevated and needs an administrator plus Enterprise/IoT for the keyboard-filter \
-             and AppLocker layers. Test on a VM only.",
+            "Session lock has no Exit button: it clears only when the unlock word is typed on \
+             the on-screen keyboard. OS lockdown runs the provisioning script elevated and \
+             needs an administrator plus Enterprise/IoT for the keyboard-filter and AppLocker \
+             layers. Test on a VM only.",
         );
         ui.add_space(10.0);
 
@@ -146,8 +146,7 @@ impl DeviceApp {
 
         if ui.button("Lock this session now").clicked() {
             self.manual_lock = true;
-            self.status =
-                "Locked. Only an owner token, a restart, or the 5-minute auto-close leaves.".into();
+            self.status = "Locked. Type the unlock word on the on-screen keyboard to leave.".into();
         }
 
         ui.add_space(14.0);
