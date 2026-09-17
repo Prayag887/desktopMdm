@@ -46,9 +46,6 @@ impl DeviceApp {
             context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
         self.suppress_keyboard(context);
-        // Let the global hook pass plain typing only while the recovery field is
-        // focused; everything else on the keyboard stays blocked.
-        crate::keyboard_guard::set_typing_allowed(self.recovery_focused);
         // Veto Alt+F4 / title-bar close / window-close in every lock mode.
         // Window-scoped only: OS-global Alt+Tab / Win / Ctrl+Shift+Esc are handled
         // by the keyboard_guard hook and, robustly, by WEKF.
@@ -146,6 +143,35 @@ impl DeviceApp {
         }
     }
 
+    /// Mouse-only on-screen keyboard for entering the owner unlock token while
+    /// the physical keyboard is fully disabled. Clicks are pointer events, so the
+    /// keyboard hook never sees them.
+    fn render_onscreen_keyboard(&mut self, ui: &mut egui::Ui) {
+        for row in [
+            "ABCDEFGHIJKLM",
+            "NOPQRSTUVWXYZ",
+            "abcdefghijklm",
+            "nopqrstuvwxyz",
+            "0123456789-_",
+        ] {
+            ui.horizontal_wrapped(|ui| {
+                for ch in row.chars() {
+                    if ui.button(ch.to_string()).clicked() && self.recovery_input.len() < 256 {
+                        self.recovery_input.push(ch);
+                    }
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Backspace").clicked() {
+                self.recovery_input.pop();
+            }
+            if ui.button("Clear").clicked() {
+                self.recovery_input.clear();
+            }
+        });
+    }
+
     pub(crate) fn render_blue_screen(&mut self, context: &egui::Context) {
         // Branded payment-restriction screen — deliberately NOT a Windows BSOD:
         // no ":(", no fake stop code, no crash language. It states plainly that
@@ -197,10 +223,8 @@ impl DeviceApp {
                             ui.label("then confirm to release this device.");
                             ui.add_space(12.0);
                             ui.label(
-                                RichText::new(
-                                    "Keyboard is suppressed except the recovery field below.",
-                                )
-                                .color(Color32::from_rgb(143, 198, 255)),
+                                RichText::new("The physical keyboard is disabled.")
+                                    .color(Color32::from_rgb(143, 198, 255)),
                             );
                             ui.label(
                                 "Only an owner token or a restart releases this · \
@@ -218,8 +242,8 @@ impl DeviceApp {
                     );
                     ui.label(RichText::new(device_line).monospace());
                     ui.label(
-                        "Give the Device ID to the owner. Paste the signed unlock token they \
-                         return. The keyboard stays enabled here for entry and accessibility.",
+                        "Give the Device ID to the owner. Enter the signed unlock token they \
+                         return using the on-screen keyboard below.",
                     );
                     ui.add_space(8.0);
                     let field = ui.add(
@@ -230,14 +254,16 @@ impl DeviceApp {
                     );
                     recovery_focused = field.has_focus();
                     ui.add_space(8.0);
+                    self.render_onscreen_keyboard(ui);
+                    ui.add_space(8.0);
                     if ui.button("Unlock with token").clicked() && self.try_recovery_unlock(context)
                     {
                         return;
                     }
                     ui.small(
-                        "Escape shortcuts are blocked by the app's keyboard hook while locked; \
-                         Ctrl+Alt+Del and the most robust blocking need the Windows Keyboard \
-                         Filter (Enterprise/IoT), never a custom driver.",
+                        "The physical keyboard is fully disabled while locked; enter the owner \
+                         token with the on-screen keys above. Ctrl+Alt+Del and Win+L are OS-\
+                         protected; the power button always shuts the device down.",
                     );
                 });
             });
