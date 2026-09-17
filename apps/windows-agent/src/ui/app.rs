@@ -79,7 +79,9 @@ impl DeviceApp {
             recovery_focused: false,
             enforced,
             lock_started: None,
-            manual_lock: false,
+            // Boot straight into the locked payment screen on every launch. The
+            // only way out is entering the unlock word on the on-screen keyboard.
+            manual_lock: true,
             device_id: read_device_id(),
             last_counter: read_last_counter(),
             lock_user: String::new(),

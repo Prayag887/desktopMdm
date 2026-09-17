@@ -114,6 +114,12 @@ impl DeviceApp {
     /// Fail-safe: any problem leaves the device locked. On success the token's
     /// counter is persisted so it cannot be replayed. Returns true if released.
     pub(crate) fn try_recovery_unlock(&mut self, context: &egui::Context) -> bool {
+        // Simple unlock word for the demo, typed on the on-screen keyboard.
+        if self.recovery_input.trim().eq_ignore_ascii_case("open") {
+            self.end_blue_screen(context);
+            self.status = "Device unlocked.".into();
+            return true;
+        }
         let Some(trusted) = parse_public_key_hex(OWNER_PUBLIC_KEY_HEX) else {
             self.status = "Recovery key not configured; use admin/WinRE recovery.".into();
             return false;
@@ -234,15 +240,12 @@ impl DeviceApp {
                         }
                         ui.vertical(|ui| {
                             ui.heading("Restore access");
-                            ui.label("Scan the code on a phone on the same network,");
-                            ui.label("then confirm to release this device.");
-                            ui.add_space(12.0);
                             ui.label(
                                 RichText::new("The physical keyboard is disabled.")
                                     .color(Color32::from_rgb(143, 198, 255)),
                             );
                             ui.label(
-                                "Only an owner token or a restart releases this · \
+                                "Type the unlock word or restart to release this · \
                                  the app auto-closes after 5 minutes",
                             );
                         });
@@ -250,34 +253,36 @@ impl DeviceApp {
                     ui.add_space(24.0);
                     ui.separator();
                     ui.add_space(12.0);
-                    ui.heading("Restore access with an owner unlock token");
-                    let device_line = self.device_id.map_or_else(
-                        || "Device ID: unknown".to_string(),
-                        |id| format!("Device ID: {id}"),
-                    );
-                    ui.label(RichText::new(device_line).monospace());
+                    ui.heading("Enter the unlock word to continue");
                     ui.label(
-                        "Give the Device ID to the owner. Enter the signed unlock token they \
-                         return using the on-screen keyboard below.",
+                        "Type the unlock word using the on-screen keyboard below, \
+                         then press Unlock.",
                     );
                     ui.add_space(8.0);
-                    let field = ui.add(
-                        egui::TextEdit::singleline(&mut *self.recovery_input)
-                            .desired_width(460.0)
-                            .char_limit(256)
-                            .hint_text("EMIU1-…"),
-                    );
+                    // Black text on a light field so the typed word is readable
+                    // despite the lock screen's white text override.
+                    let field = ui
+                        .scope(|ui| {
+                            ui.visuals_mut().override_text_color = Some(Color32::from_gray(20));
+                            ui.visuals_mut().extreme_bg_color = Color32::from_rgb(232, 238, 246);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut *self.recovery_input)
+                                    .desired_width(460.0)
+                                    .char_limit(256)
+                                    .hint_text("unlock word"),
+                            )
+                        })
+                        .inner;
                     recovery_focused = field.has_focus();
                     ui.add_space(8.0);
                     self.render_onscreen_keyboard(ui);
                     ui.add_space(8.0);
-                    if ui.button("Unlock with token").clicked() && self.try_recovery_unlock(context)
-                    {
+                    if ui.button("Unlock").clicked() && self.try_recovery_unlock(context) {
                         return;
                     }
                     ui.small(
-                        "The physical keyboard is fully disabled while locked; enter the owner \
-                         token with the on-screen keys above. Ctrl+Alt+Del and Win+L are OS-\
+                        "The physical keyboard is fully disabled while locked; type the unlock \
+                         word with the on-screen keys above. Ctrl+Alt+Del and Win+L are OS-\
                          protected; the power button always shuts the device down.",
                     );
                 });
