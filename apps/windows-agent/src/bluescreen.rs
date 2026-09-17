@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 pub const MAX_DURATION: Duration = Duration::from_secs(300);
 
-pub struct PrankSession {
+pub struct BluescreenSession {
     address: SocketAddr,
     path: String,
     dismissed: Arc<AtomicBool>,
@@ -22,7 +22,7 @@ pub struct PrankSession {
     started: Instant,
 }
 
-impl PrankSession {
+impl BluescreenSession {
     /// Bind one explicitly chosen private/loopback interface, never all interfaces.
     /// The narrow HTTP endpoint accepts no body and handles one bounded connection at a time.
     ///
@@ -90,7 +90,7 @@ impl PrankSession {
     }
 }
 
-impl Drop for PrankSession {
+impl Drop for BluescreenSession {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take() {

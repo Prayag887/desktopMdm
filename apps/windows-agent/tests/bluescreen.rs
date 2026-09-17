@@ -1,11 +1,11 @@
-use emi_device_agent::prank::PrankSession;
+use emi_device_agent::bluescreen::BluescreenSession;
 use std::{
     io::{Read, Write},
     net::{Ipv4Addr, TcpStream},
     time::Duration,
 };
 
-fn request(session: &PrankSession, method: &str, path: &str, origin: &str) -> String {
+fn request(session: &BluescreenSession, method: &str, path: &str, origin: &str) -> String {
     let mut socket = TcpStream::connect(session.address()).unwrap();
     socket
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -18,7 +18,7 @@ fn request(session: &PrankSession, method: &str, path: &str, origin: &str) -> St
 
 #[test]
 fn qr_requires_explicit_authorized_post_and_does_not_persist() {
-    let session = PrankSession::start(Ipv4Addr::LOCALHOST).unwrap();
+    let session = BluescreenSession::start(Ipv4Addr::LOCALHOST).unwrap();
     assert!(!session.dismissed());
     assert!(request(&session, "GET", session.path(), "").contains("Dismiss simulated blue screen"));
     assert!(!session.dismissed(), "scanner prefetch must not dismiss");
@@ -44,14 +44,14 @@ fn qr_requires_explicit_authorized_post_and_does_not_persist() {
     let address = session.address();
     drop(session);
     assert!(TcpStream::connect(address).is_err());
-    let restarted = PrankSession::start(Ipv4Addr::LOCALHOST).unwrap();
+    let restarted = BluescreenSession::start(Ipv4Addr::LOCALHOST).unwrap();
     assert!(!restarted.dismissed());
 }
 
 #[test]
 fn private_interface_and_slow_client_shutdown_are_bounded() {
-    assert!(PrankSession::start(Ipv4Addr::new(8, 8, 8, 8)).is_err());
-    let session = PrankSession::start(Ipv4Addr::LOCALHOST).unwrap();
+    assert!(BluescreenSession::start(Ipv4Addr::new(8, 8, 8, 8)).is_err());
+    let session = BluescreenSession::start(Ipv4Addr::LOCALHOST).unwrap();
     let mut socket = TcpStream::connect(session.address()).unwrap();
     socket.write_all(b"GET / HTTP/1.1\r\n").unwrap();
     let start = std::time::Instant::now();

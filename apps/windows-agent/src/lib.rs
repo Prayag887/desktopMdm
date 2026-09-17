@@ -1,1 +1,1 @@
-pub mod prank;
+pub mod bluescreen;

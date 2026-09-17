@@ -22,7 +22,8 @@ use std::path::Path;
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, Verifier};
+pub use ed25519_dalek::{SigningKey, VerifyingKey};
 use uuid::Uuid;
 
 /// Version tag so the format can evolve without accepting older shapes silently.

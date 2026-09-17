@@ -67,7 +67,7 @@ cargo run --package emi-device-agent --bin emi-device-ui
 cargo run --package emi-device-agent --bin emi-device-agent -- run --once
 ```
 
-The GUI is Windows-only; other platforms compile the domain library, QR listener and local-service tests. `cargo run --package emi-device-agent --example qr-preview` previews the exact phone page on loopback without running a prank. GitHub Actions checks the Windows GUI and installer syntax and builds both binaries for tagged releases. Real Windows rendering, fullscreen/Exit behavior, phone/firewall connectivity, UAC, service install/uninstall, and resume still need a PC/VM smoke test.
+The GUI is Windows-only; other platforms compile the domain library, QR listener and local-service tests. `cargo run --package emi-device-agent --example qr-preview` previews the exact phone page on loopback without running a bluescreen. GitHub Actions checks the Windows GUI and installer syntax and builds both binaries for tagged releases. Real Windows rendering, fullscreen/Exit behavior, phone/firewall connectivity, UAC, service install/uninstall, and resume still need a PC/VM smoke test.
 
 ## Repository
 

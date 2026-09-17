@@ -11,7 +11,7 @@ mod windows_app {
     use eframe::egui::{self, Color32, RichText};
     use emi_core::recovery::{parse_public_key_hex, verify_unlock};
     use emi_core::{BiosProvider, DeviceHealth};
-    use emi_device_agent::prank::PrankSession;
+    use emi_device_agent::bluescreen::BluescreenSession;
     use qrcode::{Color, QrCode};
     use std::os::windows::process::CommandExt as _;
     use std::{
@@ -27,6 +27,8 @@ mod windows_app {
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+    // A UI state bag; a state machine would be overkill for a demo panel.
+    #[allow(clippy::struct_excessive_bools)]
     struct DeviceApp {
         health: Option<DeviceHealth>,
         service_running: bool,
@@ -39,11 +41,10 @@ mod windows_app {
         confirm_password: Zeroizing<String>,
         lan_ip: String,
         consent: bool,
-        prank: Option<PrankSession>,
+        bluescreen: Option<BluescreenSession>,
         qr: Option<egui::TextureHandle>,
         recovery_input: Zeroizing<String>,
         recovery_focused: bool,
-        is_admin: bool,
         enforced: bool,
         fullscreen_applied: bool,
         manual_lock: bool,
@@ -117,11 +118,10 @@ mod windows_app {
                 lan_ip: local_ip_address::local_ip()
                     .map_or_else(|_| "127.0.0.1".into(), |ip| ip.to_string()),
                 consent: false,
-                prank: None,
+                bluescreen: None,
                 qr: None,
                 recovery_input: Zeroizing::new(String::new()),
                 recovery_focused: false,
-                is_admin,
                 enforced,
                 fullscreen_applied: false,
                 manual_lock: false,
@@ -176,7 +176,7 @@ mod windows_app {
             ui.small("Fields are masked and never saved, logged or sent to the QR page. Leaving this tab clears them. No firmware change is performed in this build.");
         }
 
-        fn render_prank(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
+        fn render_bluescreen(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
             ui.heading("Payment-restriction mode");
             ui.label("Reversible branded lock demo — Windows keeps running normally.");
             ui.add_space(16.0);
@@ -201,7 +201,7 @@ mod windows_app {
                     .lan_ip
                     .parse()
                     .map_err(|_| "Enter a valid IPv4 address".to_string())
-                    .and_then(|ip| PrankSession::start(ip).map_err(|error| error.to_string()))
+                    .and_then(|ip| BluescreenSession::start(ip).map_err(|error| error.to_string()))
                 {
                     Ok(session) => match QrCode::new(session.url()) {
                         Ok(code) => {
@@ -220,7 +220,7 @@ mod windows_app {
                                 image,
                                 egui::TextureOptions::NEAREST,
                             ));
-                            self.prank = Some(session);
+                            self.bluescreen = Some(session);
                             context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
                         }
                         Err(error) => self.status = format!("QR generation failed: {error}"),
@@ -375,7 +375,7 @@ mod windows_app {
         }
 
         fn end_blue_screen(&mut self, context: &egui::Context) {
-            self.prank = None;
+            self.bluescreen = None;
             self.qr = None;
             self.consent = false;
             self.recovery_input.zeroize();
@@ -416,13 +416,13 @@ mod windows_app {
             // signed payment-restored policy clears it.
             if !self.enforced
                 && self
-                    .prank
+                    .bluescreen
                     .as_ref()
                     .is_some_and(|session| session.dismissed() || session.expired())
             {
                 self.end_blue_screen(context);
             }
-            self.prank.is_some() || self.enforced || self.manual_lock
+            self.bluescreen.is_some() || self.enforced || self.manual_lock
         }
 
         /// Verify an owner-signed unlock token against the embedded public key.
@@ -723,7 +723,7 @@ mod windows_app {
                     if previous == 1 && self.tab != 1 { self.clear_passwords(); }
                     ui.separator();
                     if self.tab == 1 { self.render_firmware(ui); }
-                    else if self.tab == 2 { self.render_prank(ui, context); }
+                    else if self.tab == 2 { self.render_bluescreen(ui, context); }
                     else {
                     ui.add_space(16.0);
                     let (label, color) = if self.service_running {
@@ -827,13 +827,13 @@ mod windows_app {
         #[test]
         fn firmware_and_simulation_render_and_restart_is_unchecked() {
             let mut app = DeviceApp::load();
-            assert!(app.prank.is_none());
+            assert!(app.bluescreen.is_none());
             assert!(!app.consent);
             let context = egui::Context::default();
             let output = context.run(egui::RawInput::default(), |context| {
                 egui::CentralPanel::default().show(context, |ui| {
                     app.render_firmware(ui);
-                    app.render_prank(ui, context);
+                    app.render_bluescreen(ui, context);
                 });
             });
             assert!(!output.shapes.is_empty());
@@ -849,7 +849,7 @@ mod windows_app {
         #[test]
         fn escape_does_not_dismiss_but_explicit_exit_resets_mode() {
             let mut app = DeviceApp::load();
-            app.prank = Some(PrankSession::start(std::net::Ipv4Addr::LOCALHOST).unwrap());
+            app.bluescreen = Some(BluescreenSession::start(std::net::Ipv4Addr::LOCALHOST).unwrap());
             app.consent = true;
             let context = egui::Context::default();
             let input = egui::RawInput {
@@ -866,9 +866,9 @@ mod windows_app {
                 assert!(context.input(|input| input.key_pressed(egui::Key::Escape)));
                 assert!(app.blue_screen_active(context));
             });
-            assert!(app.prank.is_some());
+            assert!(app.bluescreen.is_some());
             app.end_blue_screen(&context);
-            assert!(app.prank.is_none());
+            assert!(app.bluescreen.is_none());
             assert!(!app.consent);
         }
 
@@ -945,14 +945,17 @@ mod windows_app {
         #[test]
         fn a_valid_owner_token_ends_restriction_and_zeroizes_input() {
             let mut app = DeviceApp::load();
-            app.prank = Some(PrankSession::start(std::net::Ipv4Addr::LOCALHOST).unwrap());
+            app.bluescreen = Some(BluescreenSession::start(std::net::Ipv4Addr::LOCALHOST).unwrap());
             let device = Uuid::new_v4();
             app.device_id = Some(device);
             app.last_counter = 0;
             app.recovery_input.push_str(&lab_token(device, 1));
             let context = egui::Context::default();
             assert!(app.try_recovery_unlock(&context));
-            assert!(app.prank.is_none(), "valid token must release the device");
+            assert!(
+                app.bluescreen.is_none(),
+                "valid token must release the device"
+            );
             assert_eq!(
                 app.last_counter, 1,
                 "counter advances for rollback protection"
@@ -986,7 +989,7 @@ mod windows_app {
             app.last_counter = 0;
             let context = egui::Context::default();
             // Locked with no QR / network session at all.
-            assert!(app.prank.is_none());
+            assert!(app.bluescreen.is_none());
             assert!(app.blue_screen_active(&context));
             // Renders (no Exit button) without panicking despite no session/QR.
             let output = context.run(egui::RawInput::default(), |context| {
