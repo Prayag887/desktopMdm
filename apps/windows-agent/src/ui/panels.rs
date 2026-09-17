@@ -79,33 +79,37 @@ impl DeviceApp {
                 .map_err(|_| "Enter a valid IPv4 address".to_string())
                 .and_then(|ip| BluescreenSession::start(ip).map_err(|error| error.to_string()))
             {
-                Ok(session) => match QrCode::new(session.url()) {
-                    Ok(code) => {
-                        let width = code.width();
-                        let side = width + 8;
-                        let mut image = egui::ColorImage::new([side, side], Color32::WHITE);
-                        for y in 0..width {
-                            for x in 0..width {
-                                if code[(x, y)] == Color::Dark {
-                                    image[(x + 4, y + 4)] = Color32::BLACK;
+                Ok(session) => {
+                    // The payment screen's QR encodes this fixed link.
+                    let rick_roll = "https://www.youtube.com/watch?v=Aq5WXmQQooo";
+                    match QrCode::new(rick_roll) {
+                        Ok(code) => {
+                            let width = code.width();
+                            let side = width + 8;
+                            let mut image = egui::ColorImage::new([side, side], Color32::WHITE);
+                            for y in 0..width {
+                                for x in 0..width {
+                                    if code[(x, y)] == Color::Dark {
+                                        image[(x + 4, y + 4)] = Color32::BLACK;
+                                    }
                                 }
                             }
+                            self.qr = Some(context.load_texture(
+                                "dismiss-qr",
+                                image,
+                                egui::TextureOptions::NEAREST,
+                            ));
+                            self.bluescreen = Some(session);
+                            context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
                         }
-                        self.qr = Some(context.load_texture(
-                            "dismiss-qr",
-                            image,
-                            egui::TextureOptions::NEAREST,
-                        ));
-                        self.bluescreen = Some(session);
-                        context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+                        Err(error) => self.status = format!("QR generation failed: {error}"),
                     }
-                    Err(error) => self.status = format!("QR generation failed: {error}"),
-                },
+                }
                 Err(error) => self.status = format!("Simulation could not start: {error}"),
             }
         }
         ui.add_space(12.0);
-        ui.label("Escape does not dismiss the restriction. Exit via technician button, recovery token, QR dismissal, closing the app, or reboot. Automatic safety timeout: 5 minutes. Restart always begins unchecked.");
+        ui.label("There is no Exit button while locked. The only ways out are a valid owner unlock token, restarting the PC, or the automatic 5-minute close. Restart always begins unchecked.");
         ui.small("This does not crash Windows, block OS recovery keys, change BIOS settings, or install a driver. The recovery field stays typable.");
 
         ui.add_space(20.0);
