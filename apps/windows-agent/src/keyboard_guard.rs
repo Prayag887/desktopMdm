@@ -5,6 +5,13 @@
 //! while the device is locked: Alt+Tab, the Windows keys, Alt+Esc, Ctrl+Esc,
 //! Ctrl+Shift+Esc (Task Manager) and Alt+F4.
 //!
+//! The hook runs on its **own dedicated thread** with a tight message loop. This
+//! matters: Windows enforces `LowLevelHooksTimeout` (~300 ms) and silently
+//! bypasses a low-level hook whose thread does not service the callback in time.
+//! The eframe UI thread is often busy rendering (or asleep between repaints), so
+//! a hook installed there leaks keys intermittently. A dedicated pump thread is
+//! always ready to run the callback, so shortcuts are blocked reliably.
+//!
 //! Limits (be honest): a low-level hook CANNOT intercept Ctrl+Alt+Del (the Secure
 //! Attention Sequence) — only Assigned Access / Keyboard Filter policy can — and,
 //! being user-mode, it stops working if the process is killed by another elevated
@@ -13,6 +20,7 @@
 #![allow(unsafe_code)]
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -20,11 +28,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_F4, VK_LWIN, VK_MENU, VK_RWIN, VK_TAB,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, SetWindowsHookExW, WH_KEYBOARD_LL,
+    CallNextHookEx, DispatchMessageW, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, MSG,
+    SetWindowsHookExW, TranslateMessage, WH_KEYBOARD_LL,
 };
 
-/// Whether escape shortcuts should currently be swallowed. Set every frame from
-/// the UI thread; read by the hook callback.
+/// Whether escape shortcuts should currently be swallowed. Set from the UI
+/// thread every frame; read by the hook callback on the pump thread.
 static LOCK_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Guards against installing the hook more than once.
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -35,19 +44,39 @@ pub fn set_locked(active: bool) {
     LOCK_ACTIVE.store(active, Ordering::Relaxed);
 }
 
-/// Install the low-level keyboard hook once, on the calling (UI) thread. The
-/// thread must run a message loop — eframe/winit does — for the hook to fire.
+/// Install the low-level keyboard hook on a dedicated pump thread. Idempotent.
 pub fn install() {
     if INSTALLED.swap(true, Ordering::SeqCst) {
         return;
     }
-    let module = match unsafe { GetModuleHandleW(None) } {
-        Ok(handle) => HINSTANCE(handle.0),
-        Err(_) => return,
-    };
-    // SAFETY: standard Win32 hook installation; `hook_proc` has the required
-    // signature and lives for the whole process.
-    let _ = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), Some(module), 0) };
+    thread::spawn(|| {
+        // Install on THIS thread so its message loop — not the busy UI thread —
+        // services the callback within Windows' low-level-hook timeout.
+        let module = match unsafe { GetModuleHandleW(None) } {
+            Ok(handle) => HINSTANCE(handle.0),
+            Err(_) => return,
+        };
+        // SAFETY: standard Win32 hook installation; `hook_proc` has the required
+        // signature and lives for the whole process.
+        let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), Some(module), 0) };
+        if hook.is_err() {
+            return;
+        }
+        // Pump messages forever so the OS keeps dispatching the hook callback on
+        // this thread. GetMessageW returns 0 on WM_QUIT and -1 on error.
+        let mut message = MSG::default();
+        loop {
+            let result = unsafe { GetMessageW(&raw mut message, None, 0, 0) };
+            if result.0 <= 0 {
+                break;
+            }
+            // SAFETY: translating/dispatching the retrieved message is always valid.
+            unsafe {
+                let _ = TranslateMessage(&raw const message);
+                DispatchMessageW(&raw const message);
+            }
+        }
+    });
 }
 
 fn key_down(vk: VIRTUAL_KEY) -> bool {
