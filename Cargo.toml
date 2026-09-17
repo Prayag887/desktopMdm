@@ -3,7 +3,7 @@ members = ["crates/emi-core", "apps/windows-agent"]
 resolver = "2"
 
 [workspace.package]
-version = "0.6.3"
+version = "0.6.4"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -23,7 +23,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# `deny` (not `forbid`) so the single vetted keyboard-hook module can opt in with
+# a scoped `#[allow(unsafe_code)]`; everywhere else unsafe is still a hard error.
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = "warn"
