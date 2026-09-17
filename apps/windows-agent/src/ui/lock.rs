@@ -147,28 +147,43 @@ impl DeviceApp {
     /// the physical keyboard is fully disabled. Clicks are pointer events, so the
     /// keyboard hook never sees them.
     fn render_onscreen_keyboard(&mut self, ui: &mut egui::Ui) {
-        for row in [
-            "ABCDEFGHIJKLM",
-            "NOPQRSTUVWXYZ",
-            "abcdefghijklm",
-            "nopqrstuvwxyz",
-            "0123456789-_",
-        ] {
-            ui.horizontal_wrapped(|ui| {
-                for ch in row.chars() {
-                    if ui.button(ch.to_string()).clicked() && self.recovery_input.len() < 256 {
-                        self.recovery_input.push(ch);
+        // Scope out the lock screen's white text override so keys are dark letters
+        // on light caps (high contrast, readable).
+        ui.scope(|ui| {
+            let ink = Color32::from_gray(20);
+            let cap = Color32::from_rgb(232, 238, 246);
+            ui.visuals_mut().override_text_color = Some(ink);
+            let key = |ui: &mut egui::Ui, label: &str, width: f32| {
+                ui.add_sized(
+                    [width, 34.0],
+                    egui::Button::new(RichText::new(label).size(17.0).color(ink)).fill(cap),
+                )
+            };
+            for row in [
+                "ABCDEFGHIJKLM",
+                "NOPQRSTUVWXYZ",
+                "abcdefghijklm",
+                "nopqrstuvwxyz",
+                "0123456789-_",
+            ] {
+                ui.horizontal_wrapped(|ui| {
+                    for ch in row.chars() {
+                        if key(ui, &ch.to_string(), 34.0).clicked()
+                            && self.recovery_input.len() < 256
+                        {
+                            self.recovery_input.push(ch);
+                        }
                     }
+                });
+            }
+            ui.horizontal(|ui| {
+                if key(ui, "Backspace", 110.0).clicked() {
+                    self.recovery_input.pop();
+                }
+                if key(ui, "Clear", 90.0).clicked() {
+                    self.recovery_input.clear();
                 }
             });
-        }
-        ui.horizontal(|ui| {
-            if ui.button("Backspace").clicked() {
-                self.recovery_input.pop();
-            }
-            if ui.button("Clear").clicked() {
-                self.recovery_input.clear();
-            }
         });
     }
 

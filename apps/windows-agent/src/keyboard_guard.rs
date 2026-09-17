@@ -55,6 +55,15 @@ pub fn install() {
         // SAFETY: standard Win32 hook installation; `hook_proc` has the required
         // signature and lives for the whole process.
         let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), Some(module), 0) };
+        // Record the outcome so a failure to block the keyboard can be diagnosed.
+        let note = match &hook {
+            Ok(_) => "keyboard guard: hook installed".to_string(),
+            Err(error) => format!("keyboard guard: SetWindowsHookExW FAILED: {error}"),
+        };
+        let _ = std::fs::write(
+            std::env::temp_dir().join("emi-keyboard-guard.log"),
+            format!("{note}\n"),
+        );
         if hook.is_err() {
             return;
         }
