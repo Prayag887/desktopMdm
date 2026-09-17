@@ -6,7 +6,7 @@ use emi_core::recovery::{parse_public_key_hex, verify_unlock};
 use zeroize::Zeroize as _;
 
 use super::app::{DeviceApp, OWNER_PUBLIC_KEY_HEX};
-use super::system::write_last_counter;
+use super::system::{set_task_manager_disabled, write_last_counter};
 
 impl DeviceApp {
     pub(crate) fn end_blue_screen(&mut self, context: &egui::Context) {
@@ -22,6 +22,8 @@ impl DeviceApp {
         self.enforced = false;
         self.manual_lock = false;
         self.fullscreen_applied = false;
+        // Re-enable Task Manager that the lock disabled for this user.
+        set_task_manager_disabled(false);
         self.status = "Payment-restriction mode ended. The checkbox is reset.".into();
         context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
     }

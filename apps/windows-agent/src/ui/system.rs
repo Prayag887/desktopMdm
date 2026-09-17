@@ -72,6 +72,31 @@ pub(crate) fn write_last_counter(counter: u64) {
     }
 }
 
+/// Enable or disable Task Manager for the current user via the documented
+/// `DisableTaskMgr` policy value in the user's own HKCU hive. No elevation is
+/// needed (the app runs as this user), it works on Windows Home, and Windows
+/// shows "Task Manager has been disabled by your administrator" on Ctrl+Shift+Esc
+/// or the taskbar menu. Best-effort: registry failures are ignored so a lock is
+/// never blocked by this. Removed again on unlock.
+pub(crate) fn set_task_manager_disabled(disabled: bool) {
+    const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System";
+    let value = if disabled { "1" } else { "0" };
+    let _ = Command::new("reg.exe")
+        .args([
+            "add",
+            KEY,
+            "/v",
+            "DisableTaskMgr",
+            "/t",
+            "REG_DWORD",
+            "/d",
+            value,
+            "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+}
+
 pub(crate) fn agent_path() -> Result<PathBuf, String> {
     let current = std::env::current_exe().map_err(|error| error.to_string())?;
     Ok(current.with_file_name("emi-device-agent.exe"))

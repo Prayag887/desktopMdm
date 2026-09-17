@@ -10,7 +10,7 @@ use zeroize::Zeroizing;
 
 use super::system::{
     current_user_is_admin, launched_as_user_shell, read_device_id, read_health, read_last_counter,
-    service_is_running,
+    service_is_running, set_task_manager_disabled,
 };
 use crate::bluescreen::BluescreenSession;
 
@@ -103,10 +103,11 @@ impl eframe::App for DeviceApp {
         crate::keyboard_guard::set_locked(locked);
         if locked {
             context.request_repaint_after(Duration::from_millis(100));
-            // Force and hold fullscreen for ANY active lock (demo, manual, or
-            // enforced), so the window cannot be un-maximised out of the way.
+            // One-shot on entering a lock: force fullscreen and disable Task
+            // Manager for this user (registry policy; re-enabled on unlock).
             if !self.fullscreen_applied {
                 context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+                set_task_manager_disabled(true);
                 self.fullscreen_applied = true;
             }
             self.suppress_keyboard(context);
