@@ -46,6 +46,9 @@ impl DeviceApp {
             context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
         self.suppress_keyboard(context);
+        // Let the global hook pass plain typing only while the recovery field is
+        // focused; everything else on the keyboard stays blocked.
+        crate::keyboard_guard::set_typing_allowed(self.recovery_focused);
         // Veto Alt+F4 / title-bar close / window-close in every lock mode.
         // Window-scoped only: OS-global Alt+Tab / Win / Ctrl+Shift+Esc are handled
         // by the keyboard_guard hook and, robustly, by WEKF.
