@@ -128,6 +128,22 @@ impl DeviceApp {
         );
         ui.add_space(10.0);
 
+        // Manual keyboard kill switch, independent of the lock screen. Toggle it
+        // back off with the mouse (the checkbox is a pointer control).
+        let mut disabled = self.keyboard_disabled;
+        if ui
+            .checkbox(&mut disabled, "Disable keyboard now (block every key)")
+            .changed()
+        {
+            self.keyboard_disabled = disabled;
+            self.status = if disabled {
+                "Keyboard disabled. Uncheck (mouse) to re-enable.".into()
+            } else {
+                "Keyboard enabled.".into()
+            };
+        }
+        ui.add_space(10.0);
+
         if ui.button("Lock this session now").clicked() {
             self.manual_lock = true;
             self.status =

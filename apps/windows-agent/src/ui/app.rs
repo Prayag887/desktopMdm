@@ -49,6 +49,8 @@ pub(crate) struct DeviceApp {
     pub(crate) opt_shell: bool,
     pub(crate) opt_keyboard_filter: bool,
     pub(crate) opt_applocker: bool,
+    /// Manual override: block the keyboard even when no lock screen is showing.
+    pub(crate) keyboard_disabled: bool,
 }
 
 impl DeviceApp {
@@ -84,6 +86,7 @@ impl DeviceApp {
             opt_shell: true,
             opt_keyboard_filter: true,
             opt_applocker: true,
+            keyboard_disabled: false,
         }
     }
 
@@ -98,9 +101,9 @@ impl DeviceApp {
 impl eframe::App for DeviceApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         let locked = self.blue_screen_active(context);
-        // Drive the global keyboard hook: swallow escape shortcuts only while a
-        // lock screen is showing.
-        crate::keyboard_guard::set_locked(locked);
+        // Drive the global keyboard hook: block the keyboard while a lock screen
+        // is showing OR the manual "disable keyboard" toggle is on.
+        crate::keyboard_guard::set_locked(locked || self.keyboard_disabled);
         if locked {
             self.tick_locked(context);
             return;
