@@ -200,9 +200,8 @@ impl DeviceApp {
             )
             .show(context, |ui| {
                 ui.visuals_mut().override_text_color = Some(Color32::WHITE);
-                // No Exit button in any mode. The only ways out are a valid owner
-                // unlock token, the QR dismissal, a restart, or the 5-minute
-                // safety auto-close. There is deliberately no click-to-leave.
+                // No Exit button in any mode. The only way out is typing the
+                // unlock word (or a valid signed token). No click-to-leave.
                 ui.add_space(20.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.label(
@@ -268,7 +267,23 @@ impl DeviceApp {
                     ui.add_space(8.0);
                     self.render_onscreen_keyboard(ui);
                     ui.add_space(8.0);
-                    if ui.button("Unlock").clicked() && self.try_recovery_unlock(context) {
+                    // Explicit high-contrast primary button: dark text on a light
+                    // fill, scoped past the lock screen's white text override.
+                    let unlock = ui
+                        .scope(|ui| {
+                            ui.visuals_mut().override_text_color = Some(Color32::from_gray(20));
+                            ui.add(
+                                egui::Button::new(
+                                    RichText::new("Unlock")
+                                        .size(18.0)
+                                        .color(Color32::from_gray(20)),
+                                )
+                                .min_size(egui::vec2(140.0, 36.0))
+                                .fill(Color32::from_rgb(143, 198, 255)),
+                            )
+                        })
+                        .inner;
+                    if unlock.clicked() && self.try_recovery_unlock(context) {
                         return;
                     }
                     ui.small(
