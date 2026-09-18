@@ -23,7 +23,9 @@ Copy-Item $uiExe (Join-Path $InstallDir 'emi-device-ui.exe') -Force
 $agent = Join-Path $InstallDir 'emi-device-agent.exe'
 if (-not $SkipWingetBootstrap) {
   & $agent bootstrap
-  Assert-NativeExit 'WinGet bootstrap'
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "WinGet bootstrap failed (exit $LASTEXITCODE); continuing without it."
+  }
 }
 & $agent init
 Assert-NativeExit 'Local device initialization'

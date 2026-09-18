@@ -3,7 +3,7 @@ members = ["crates/emi-core", "apps/windows-agent"]
 resolver = "2"
 
 [workspace.package]
-version = "0.6.19"
+version = "0.6.20"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"

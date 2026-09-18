@@ -45,6 +45,7 @@ jobs:
           Copy-Item target/release/emi-device-agent.exe dist/emi-device-agent-windows-x64/
           Copy-Item target/release/emi-device-ui.exe dist/emi-device-agent-windows-x64/
           Copy-Item packaging/windows/*.ps1 dist/emi-device-agent-windows-x64/
+          Copy-Item packaging/windows/*.cmd dist/emi-device-agent-windows-x64/
           Copy-Item README.md,LICENSE dist/emi-device-agent-windows-x64/
           Compress-Archive dist/emi-device-agent-windows-x64/* dist/emi-device-agent-windows-x64.zip
       - uses: actions/upload-artifact@v4
