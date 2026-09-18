@@ -4,10 +4,10 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use eframe::egui::{self, Color32, RichText};
-use emi_core::recovery::{parse_public_key_hex, verify_unlock};
+use emi_core::recovery::{parse_public_key_hex, verify_unlock, verify_unlock_word};
 use zeroize::Zeroize as _;
 
-use super::app::{DeviceApp, OWNER_PUBLIC_KEY_HEX};
+use super::app::{DeviceApp, OWNER_PUBLIC_KEY_HEX, UNLOCK_WORD_HASH};
 use super::system::{set_task_manager_disabled, write_last_counter};
 use crate::bluescreen::BluescreenSession;
 
@@ -108,39 +108,53 @@ impl DeviceApp {
     /// Fail-safe: any problem leaves the device locked. On success the token's
     /// counter is persisted so it cannot be replayed. Returns true if released.
     pub(crate) fn try_recovery_unlock(&mut self, context: &egui::Context) -> bool {
-        // Simple unlock word for the demo, typed on the on-screen keyboard.
-        if self.recovery_input.trim().eq_ignore_ascii_case("open") {
-            self.end_blue_screen(context);
-            self.status = "Device unlocked.".into();
+        // Rate limit: stop live guessing of the word once attempts pile up.
+        if let Some(until) = self.unlock_locked_until {
+            if let Some(remaining) = until.checked_duration_since(Instant::now()) {
+                self.status = format!("Too many attempts. Wait {}s.", remaining.as_secs() + 1);
+                return false;
+            }
+        }
+        let input = self.recovery_input.trim().to_string();
+
+        // Unlock word: verified against a slow Argon2id hash (case-insensitive),
+        // never a plaintext compare — the word is not present in the binary.
+        if verify_unlock_word(&input.to_lowercase(), UNLOCK_WORD_HASH) {
+            self.unlock_released(context, "Device unlocked.");
             return true;
         }
-        let Some(trusted) = parse_public_key_hex(OWNER_PUBLIC_KEY_HEX) else {
-            self.status = "Recovery key not configured; use admin/WinRE recovery.".into();
-            return false;
-        };
-        let Some(device) = self.device_id else {
-            self.status = "Device identity unknown; cannot verify unlock token.".into();
-            return false;
-        };
-        match verify_unlock(
-            self.recovery_input.trim(),
-            &trusted,
-            device,
-            Utc::now(),
-            self.last_counter,
-        ) {
-            Ok(token) => {
-                self.last_counter = token.counter;
-                write_last_counter(token.counter);
-                self.end_blue_screen(context);
-                self.status = "Device unlocked with a valid owner token.".into();
-                true
-            }
-            Err(error) => {
-                self.status = format!("Unlock refused: {error}");
-                false
+
+        // Owner-signed token path.
+        if let Some(trusted) = parse_public_key_hex(OWNER_PUBLIC_KEY_HEX) {
+            if let Some(device) = self.device_id {
+                if let Ok(token) =
+                    verify_unlock(&input, &trusted, device, Utc::now(), self.last_counter)
+                {
+                    self.last_counter = token.counter;
+                    write_last_counter(token.counter);
+                    self.unlock_released(context, "Device unlocked with a valid owner token.");
+                    return true;
+                }
             }
         }
+
+        // Failure: count it and back off (5s, 10s, 20s … capped) after 5 tries.
+        self.unlock_fail_count += 1;
+        if self.unlock_fail_count >= 5 {
+            let backoff = 5u64 << (self.unlock_fail_count - 5).min(5);
+            self.unlock_locked_until = Some(Instant::now() + Duration::from_secs(backoff));
+            self.status = format!("Incorrect. Locked for {backoff}s.");
+        } else {
+            self.status = "Incorrect. Try again.".into();
+        }
+        false
+    }
+
+    fn unlock_released(&mut self, context: &egui::Context, message: &str) {
+        self.unlock_fail_count = 0;
+        self.unlock_locked_until = None;
+        self.end_blue_screen(context);
+        self.status = message.into();
     }
 
     /// Mouse-only on-screen keyboard for entering the owner unlock token while

@@ -22,6 +22,11 @@ use crate::bluescreen::BluescreenSession;
 pub(crate) const OWNER_PUBLIC_KEY_HEX: &str =
     "ac1473ba71d2cd322163ccc8a8f64e1226cfcb815bfc270cbe7417f16d8ae7ba";
 
+/// Argon2id hash of the unlock word (case-insensitive). The plaintext word is
+/// NOT stored — `strings`/memory inspection only reveal this slow salted hash.
+/// Regenerate with `cargo run --example hash-word -p emi-core -- <word>`.
+pub(crate) const UNLOCK_WORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$Mdla+Ww3AP3Pto1BvS9hYA$LJMhBSc74442jY/70O0oEXn+b9Uzu07tguj2Hin1PIc";
+
 // A UI state bag; a state machine would be overkill for a demo panel.
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct DeviceApp {
@@ -51,6 +56,10 @@ pub(crate) struct DeviceApp {
     pub(crate) opt_applocker: bool,
     /// Manual override: block the keyboard even when no lock screen is showing.
     pub(crate) keyboard_disabled: bool,
+    /// Consecutive failed unlock attempts, and a lockout deadline, to stop live
+    /// guessing of the unlock word.
+    pub(crate) unlock_fail_count: u32,
+    pub(crate) unlock_locked_until: Option<Instant>,
 }
 
 impl DeviceApp {
@@ -89,6 +98,8 @@ impl DeviceApp {
             opt_keyboard_filter: true,
             opt_applocker: true,
             keyboard_disabled: false,
+            unlock_fail_count: 0,
+            unlock_locked_until: None,
         }
     }
 

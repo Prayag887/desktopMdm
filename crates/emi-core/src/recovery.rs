@@ -20,6 +20,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, Signer, Verifier};
@@ -96,6 +97,24 @@ impl UnlockToken {
         buffer.extend_from_slice(&signature.to_bytes());
         format!("{TOKEN_PREFIX}{}", URL_SAFE_NO_PAD.encode(buffer))
     }
+}
+
+/// Verify a passphrase against an Argon2id encoded hash.
+///
+/// The plaintext word is never stored — only this slow, salted hash — so
+/// `strings`, a memory dump of the running app, or casual disassembly reveal
+/// nothing usable, and recovering the word requires an offline dictionary attack
+/// against Argon2id (deliberately slow). It is not "impossible" (no client-side
+/// secret is), but it is far beyond a plaintext-string lookup. Pair it with
+/// attempt rate-limiting to stop live guessing.
+#[must_use]
+pub fn verify_unlock_word(input: &str, encoded_hash: &str) -> bool {
+    let Ok(parsed) = PasswordHash::new(encoded_hash) else {
+        return false;
+    };
+    Argon2::default()
+        .verify_password(input.trim().as_bytes(), &parsed)
+        .is_ok()
 }
 
 /// Parse a 32-byte hex public key (as printed by the `keygen` example).
@@ -422,6 +441,16 @@ mod tests {
         let path = dir.path().join("unlock-counter.txt");
         fs::write(&path, "not-a-number").expect("write");
         assert_eq!(read_counter(&path), 0);
+    }
+
+    #[test]
+    fn unlock_word_verifies_against_its_argon2_hash() {
+        // Argon2id hash of "open" (the app embeds this, not the word).
+        let hash = "$argon2id$v=19$m=19456,t=2,p=1$Mdla+Ww3AP3Pto1BvS9hYA$LJMhBSc74442jY/70O0oEXn+b9Uzu07tguj2Hin1PIc";
+        assert!(verify_unlock_word("open", hash));
+        assert!(verify_unlock_word("  open  ", hash), "input is trimmed");
+        assert!(!verify_unlock_word("nope", hash));
+        assert!(!verify_unlock_word("open", "not-a-valid-hash"));
     }
 
     #[test]
