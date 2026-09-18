@@ -65,6 +65,17 @@ try {
     $winlogon = 'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
     $policySystem = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
 
+    if ($layers -contains 'shell-launcher') {
+      # Disable Shell Launcher and drop the enrolled user's custom shell so the
+      # account returns to the default Explorer desktop.
+      try {
+        $shellLauncher = [wmiclass]"\\localhost\root\standardcimv2\embedded:WESL_UserSetting"
+        $shellLauncher.RemoveCustomShell($sid) | Out-Null
+        $shellLauncher.SetEnabled($false) | Out-Null
+        Write-Host '  restored: Shell Launcher disabled'
+      }
+      catch { Write-Warning "  Shell Launcher teardown failed: $_" }
+    }
     if ($layers -contains 'per-user-shell') {
       # Restore the standard Explorer shell for this account.
       $key = "$userRoot\$winlogon"

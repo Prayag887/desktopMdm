@@ -128,15 +128,29 @@ function Set-UserValue([string]$subPath, [string]$name, $value, [string]$type = 
 try {
   if ($PSCmdlet.ShouldProcess($EnrolledUser, 'Apply payment restriction')) {
 
-    # --- Layer 1: universal base (all editions) ------------------------------
+    # --- Layer 1: make the app the enrolled user's shell ---------------------
+    # Enterprise/IoT: Shell Launcher (supported, robust, auto-launches the app as
+    # the shell on every login with no desktop; admins keep the default shell).
+    # Other editions: fall back to the per-user Winlogon Shell value.
     $winlogon = 'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
-    # Custom per-user shell: the app replaces Explorer for THIS account only.
-    if (-not $SkipShell) {
-      Set-UserValue $winlogon 'Shell' "`"$AppPath`""
-      Add-Layer 'per-user-shell'
+    if ($SkipShell) {
+      Add-Skipped 'shell' 'disabled by -SkipShell'
+    }
+    elseif ($isEnterpriseClass) {
+      $feature = Get-WindowsOptionalFeature -Online -FeatureName Client-EmbeddedShellLauncher -ErrorAction SilentlyContinue
+      if ($feature -and $feature.State -ne 'Enabled') {
+        Enable-WindowsOptionalFeature -Online -FeatureName Client-EmbeddedShellLauncher -NoRestart | Out-Null
+      }
+      $shellLauncher = [wmiclass]"\\localhost\root\standardcimv2\embedded:WESL_UserSetting"
+      # DefaultAction 0 = restart the shell if it exits, so the device stays on the
+      # locked app until an administrator removes the restriction.
+      $shellLauncher.SetCustomShell($enrolledSid, $AppPath, ($null), ($null), 0) | Out-Null
+      $shellLauncher.SetEnabled($true) | Out-Null
+      Add-Layer 'shell-launcher'
     }
     else {
-      Add-Skipped 'per-user-shell' 'disabled by -SkipShell'
+      Set-UserValue $winlogon 'Shell' "`"$AppPath`""
+      Add-Layer 'per-user-shell'
     }
 
     $policySystem = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
