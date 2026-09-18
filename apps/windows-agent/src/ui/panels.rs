@@ -7,6 +7,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
 
+use base64::Engine as _;
 use eframe::egui::{self, Color32};
 use emi_core::BiosProvider;
 use qrcode::{Color, QrCode};
@@ -42,7 +43,7 @@ impl DeviceApp {
         {
             self.install_bios_adapter();
         }
-        ui.small("Downloads the signed OEM firmware tool via winget (Dell) or PSGallery (HP). Lenovo needs none. This never writes to firmware; applying a password stays disabled pending exact-model support and testing.");
+        ui.small("Fully automatic: fetches winget first if the device lacks it, then installs the signed OEM tool via winget (Dell) or PSGallery (HP). Lenovo needs none. This never writes to firmware; applying a password stays disabled pending exact-model support and testing.");
         ui.label("Firmware passwords cannot be read back. Enter the current password only if you know it. Your exact manufacturer and model are required before changes can be enabled.");
         ui.add_space(16.0);
         for (label, value) in [
@@ -72,8 +73,9 @@ impl DeviceApp {
     }
 
     /// Auto-install the OEM firmware adapter for the detected manufacturer from a
-    /// signed source (winget for Dell, `PSGallery` for HP). Lenovo needs none. This
-    /// installs a vendor tool only; it never writes to firmware.
+    /// signed source (winget for Dell, `PSGallery` for HP), bootstrapping winget
+    /// itself first if the device lacks it. Lenovo needs none. This installs a
+    /// vendor tool only; it never writes to firmware.
     fn install_bios_adapter(&mut self) {
         if self.result_rx.is_some() {
             return;
@@ -82,9 +84,12 @@ impl DeviceApp {
             .health
             .as_ref()
             .map_or(BiosProvider::Unsupported, |health| health.bios_provider);
-        let command = match provider {
+        // Inner elevated script. The Dell path bootstraps winget automatically
+        // (download the official App Installer bundle) when it is missing, then
+        // installs the tool. HP uses PSGallery (no winget). Lenovo/other: nothing.
+        let inner: &str = match provider {
             BiosProvider::Dell => {
-                "winget install --id Dell.CommandConfigure -e --accept-source-agreements --accept-package-agreements"
+                "if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { $ProgressPreference='SilentlyContinue'; $b=Join-Path $env:TEMP 'winget-bootstrap.msixbundle'; Invoke-WebRequest 'https://aka.ms/getwinget' -OutFile $b; Add-AppxPackage -Path $b; Remove-Item $b -Force -ErrorAction SilentlyContinue } ; winget install --id Dell.CommandConfigure -e --accept-source-agreements --accept-package-agreements"
             }
             BiosProvider::Hp => "Install-Module -Name HPCMSL -Force -AcceptLicense -Scope AllUsers",
             BiosProvider::Lenovo => {
@@ -96,15 +101,19 @@ impl DeviceApp {
                 return;
             }
         };
-        self.status = "Installing OEM adapter (elevated)…".into();
+        // Pass the multi-step script as a base64 UTF-16LE -EncodedCommand so its
+        // quotes/semicolons survive the elevated Start-Process invocation intact.
+        let utf16: Vec<u8> = inner.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
+        self.status = "Installing OEM adapter (elevated; fetches winget if missing)…".into();
         let (tx, rx) = mpsc::channel();
         self.result_rx = Some(rx);
         thread::spawn(move || {
-            let script = format!(
-                "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command','{command}' -Verb RunAs -PassThru -Wait; exit $p.ExitCode",
+            let outer = format!(
+                "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','{encoded}' -Verb RunAs -PassThru -Wait; exit $p.ExitCode",
             );
             let result = Command::new("powershell.exe")
-                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .args(["-NoProfile", "-NonInteractive", "-Command", &outer])
                 .creation_flags(CREATE_NO_WINDOW)
                 .status()
                 .map_or_else(
