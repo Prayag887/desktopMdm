@@ -53,5 +53,14 @@ $shortcut.TargetPath = Join-Path $InstallDir 'emi-device-ui.exe'
 $shortcut.WorkingDirectory = $InstallDir
 $shortcut.Description = 'Standalone EMI desktop companion'
 $shortcut.Save()
-Start-Process (Join-Path $InstallDir 'emi-device-ui.exe')
+# All-users logon auto-start: launch the lock for EVERY account at login (admins
+# included) via a scheduled task, which — unlike the StartUp folder — cannot be
+# skipped by holding Shift. Any session is released by typing the on-screen word.
+$uiPath = Join-Path $InstallDir 'emi-device-ui.exe'
+$lockAction = New-ScheduledTaskAction -Execute $uiPath
+$lockTrigger = New-ScheduledTaskTrigger -AtLogOn
+$lockPrincipal = New-ScheduledTaskPrincipal -GroupId 'S-1-1-0'
+$lockSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName 'EmiDeviceLockAll' -Action $lockAction -Trigger $lockTrigger -Principal $lockPrincipal -Settings $lockSettings -Force | Out-Null
+Start-Process $uiPath
 Write-Host 'EMI desktop companion installed. No server or enrollment required.' -ForegroundColor Green

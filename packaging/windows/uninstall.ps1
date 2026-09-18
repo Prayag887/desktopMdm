@@ -13,4 +13,5 @@ if (Get-Service EmiDeviceAgent -ErrorAction SilentlyContinue) {
 }
 Remove-Item $resolvedInstallDir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\EMI Device.lnk" -Force -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName 'EmiDeviceLockAll' -Confirm:$false -ErrorAction SilentlyContinue
 Write-Host 'Desktop companion removed. Local device data remains in ProgramData for recovery.'
