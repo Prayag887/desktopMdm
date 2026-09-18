@@ -65,6 +65,10 @@ try {
     $winlogon = 'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
     $policySystem = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
 
+    if ($layers -contains 'logon-task') {
+      Unregister-ScheduledTask -TaskName 'EmiDeviceLock' -Confirm:$false -ErrorAction SilentlyContinue
+      Write-Host '  restored: removed logon auto-start task'
+    }
     if ($layers -contains 'shell-launcher') {
       # Disable Shell Launcher and drop the enrolled user's custom shell so the
       # account returns to the default Explorer desktop.

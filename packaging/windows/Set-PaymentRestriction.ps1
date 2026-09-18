@@ -153,6 +153,17 @@ try {
       Add-Layer 'per-user-shell'
     }
 
+    # Logon auto-start: relaunch the lock at every logon of the enrolled user, so
+    # it always comes up after a boot or restart even on editions without Shell
+    # Launcher. Runs at the user's standard privilege.
+    if (-not $SkipShell) {
+      $taskAction = New-ScheduledTaskAction -Execute $AppPath
+      $taskTrigger = New-ScheduledTaskTrigger -AtLogOn -User $EnrolledUser
+      $taskPrincipal = New-ScheduledTaskPrincipal -UserId $EnrolledUser -RunLevel Limited
+      Register-ScheduledTask -TaskName 'EmiDeviceLock' -Action $taskAction -Trigger $taskTrigger -Principal $taskPrincipal -Force | Out-Null
+      Add-Layer 'logon-task'
+    }
+
     $policySystem = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
     Set-UserValue $policySystem 'DisableTaskMgr' 1 'DWord'          # blocks Ctrl+Shift+Esc target
     Set-UserValue $policySystem 'DisableChangePassword' 1 'DWord'
