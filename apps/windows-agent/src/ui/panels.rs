@@ -12,7 +12,9 @@ use emi_core::BiosProvider;
 use qrcode::{Color, QrCode};
 
 use super::app::DeviceApp;
-use super::system::{CREATE_NO_WINDOW, agent_path, read_health, service_is_running};
+use super::system::{
+    CREATE_NO_WINDOW, agent_path, bios_adapter_status, read_health, service_is_running,
+};
 use crate::bluescreen::BluescreenSession;
 
 impl DeviceApp {
@@ -20,10 +22,27 @@ impl DeviceApp {
         ui.heading("Firmware credentials");
         ui.label("Prepare a BIOS password change");
         ui.add_space(12.0);
-        ui.colored_label(
-            Color32::from_rgb(230, 180, 100),
-            "Not connected to a supported OEM adapter",
-        );
+        let provider = self
+            .health
+            .as_ref()
+            .map_or(BiosProvider::Unsupported, |health| health.bios_provider);
+        let (adapter_present, adapter_status) = bios_adapter_status(provider);
+        let color = if adapter_present {
+            Color32::from_rgb(30, 150, 85)
+        } else {
+            Color32::from_rgb(230, 180, 100)
+        };
+        ui.colored_label(color, &adapter_status);
+        if ui
+            .add_enabled(
+                self.result_rx.is_none(),
+                egui::Button::new("Check & install OEM adapter (admin)"),
+            )
+            .clicked()
+        {
+            self.install_bios_adapter();
+        }
+        ui.small("Downloads the signed OEM firmware tool via winget (Dell) or PSGallery (HP). Lenovo needs none. This never writes to firmware; applying a password stays disabled pending exact-model support and testing.");
         ui.label("Firmware passwords cannot be read back. Enter the current password only if you know it. Your exact manufacturer and model are required before changes can be enabled.");
         ui.add_space(16.0);
         for (label, value) in [
@@ -50,6 +69,56 @@ impl DeviceApp {
             }
         });
         ui.small("Fields are masked and never saved, logged or sent to the QR page. Leaving this tab clears them. No firmware change is performed in this build.");
+    }
+
+    /// Auto-install the OEM firmware adapter for the detected manufacturer from a
+    /// signed source (winget for Dell, `PSGallery` for HP). Lenovo needs none. This
+    /// installs a vendor tool only; it never writes to firmware.
+    fn install_bios_adapter(&mut self) {
+        if self.result_rx.is_some() {
+            return;
+        }
+        let provider = self
+            .health
+            .as_ref()
+            .map_or(BiosProvider::Unsupported, |health| health.bios_provider);
+        let command = match provider {
+            BiosProvider::Dell => {
+                "winget install --id Dell.CommandConfigure -e --accept-source-agreements --accept-package-agreements"
+            }
+            BiosProvider::Hp => "Install-Module -Name HPCMSL -Force -AcceptLicense -Scope AllUsers",
+            BiosProvider::Lenovo => {
+                self.status = "Lenovo uses built-in BIOS WMI; no adapter download needed.".into();
+                return;
+            }
+            BiosProvider::Unsupported => {
+                self.status = "Manufacturer not supported; no OEM adapter to install.".into();
+                return;
+            }
+        };
+        self.status = "Installing OEM adapter (elevated)…".into();
+        let (tx, rx) = mpsc::channel();
+        self.result_rx = Some(rx);
+        thread::spawn(move || {
+            let script = format!(
+                "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command','{command}' -Verb RunAs -PassThru -Wait; exit $p.ExitCode",
+            );
+            let result = Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .creation_flags(CREATE_NO_WINDOW)
+                .status()
+                .map_or_else(
+                    |error| format!("Adapter install failed: {error}"),
+                    |status| {
+                        if status.success() {
+                            "OEM adapter installed.".into()
+                        } else {
+                            format!("Adapter install canceled or failed: {status}")
+                        }
+                    },
+                );
+            let _ = tx.send(result);
+        });
     }
 
     pub(crate) fn render_bluescreen(&mut self, ui: &mut egui::Ui, context: &egui::Context) {

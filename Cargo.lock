@@ -843,7 +843,7 @@ dependencies = [
 
 [[package]]
 name = "emi-core"
-version = "0.6.15"
+version = "0.6.16"
 dependencies = [
  "base64",
  "chrono",
@@ -859,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "emi-device-agent"
-version = "0.6.15"
+version = "0.6.16"
 dependencies = [
  "anyhow",
  "chrono",

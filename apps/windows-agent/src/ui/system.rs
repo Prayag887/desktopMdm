@@ -3,7 +3,7 @@
 use std::os::windows::process::CommandExt as _;
 use std::{fs, path::PathBuf, process::Command};
 
-use emi_core::DeviceHealth;
+use emi_core::{BiosProvider, DeviceHealth};
 use uuid::Uuid;
 
 /// `CREATE_NO_WINDOW` — spawn console helpers without flashing a window.
@@ -95,6 +95,45 @@ pub(crate) fn set_task_manager_disabled(disabled: bool) {
         ])
         .creation_flags(CREATE_NO_WINDOW)
         .status();
+}
+
+fn dell_cctk_path() -> Option<PathBuf> {
+    [
+        r"C:\Program Files (x86)\Dell\Command Configure\X86_64\cctk.exe",
+        r"C:\Program Files\Dell\Command Configure\X86_64\cctk.exe",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|path| path.exists())
+}
+
+/// Read-only status of the OEM firmware adapter for the detected manufacturer:
+/// `(present, message)`. Cheap enough to call per frame (a file check for Dell;
+/// constant answers otherwise). No firmware is touched.
+pub(crate) fn bios_adapter_status(provider: BiosProvider) -> (bool, String) {
+    match provider {
+        BiosProvider::Dell => {
+            let present = dell_cctk_path().is_some();
+            let message = if present {
+                "Dell Command | Configure detected"
+            } else {
+                "Dell Command | Configure not installed"
+            };
+            (present, message.to_string())
+        }
+        BiosProvider::Lenovo => (
+            true,
+            "Lenovo uses built-in BIOS WMI; no adapter download needed".to_string(),
+        ),
+        BiosProvider::Hp => (
+            false,
+            "HP CMSL required — install to enable firmware management".to_string(),
+        ),
+        BiosProvider::Unsupported => (
+            false,
+            "Manufacturer not supported for firmware management".to_string(),
+        ),
+    }
 }
 
 pub(crate) fn agent_path() -> Result<PathBuf, String> {
