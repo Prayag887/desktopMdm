@@ -7,6 +7,13 @@ permissions:
 jobs:
   windows-desktop:
     runs-on: windows-latest
+    env:
+      # Add these repo secrets to enable Authenticode signing:
+      #   CODE_SIGN_PFX_BASE64     - base64 of your OV/EV code-signing .pfx
+      #   CODE_SIGN_PFX_PASSWORD   - the .pfx password
+      # Without them the signing step is skipped and the build is unsigned.
+      SIGN_PFX_BASE64: ${{ secrets.CODE_SIGN_PFX_BASE64 }}
+      SIGN_PFX_PASSWORD: ${{ secrets.CODE_SIGN_PFX_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -16,6 +23,21 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo build --release --package emi-device-agent
+      - name: Code-sign binaries (only if a certificate secret is configured)
+        if: ${{ env.SIGN_PFX_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          $bytes = [Convert]::FromBase64String($env:SIGN_PFX_BASE64)
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx, $bytes)
+          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' |
+            Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
+          if (-not $signtool) { throw 'signtool.exe not found' }
+          & $signtool sign /f $pfx /p $env:SIGN_PFX_PASSWORD /fd SHA256 `
+            /tr http://timestamp.digicert.com /td SHA256 `
+            target/release/emi-device-agent.exe target/release/emi-device-ui.exe
+          if ($LASTEXITCODE -ne 0) { throw "signing failed ($LASTEXITCODE)" }
+          Remove-Item $pfx -Force
       - name: Package desktop app
         shell: pwsh
         run: |
