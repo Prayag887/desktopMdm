@@ -12,6 +12,16 @@ fn main() {
 fn main() -> eframe::Result<()> {
     use std::os::windows::process::CommandExt as _;
 
+    // Install sets up several independent auto-start triggers (StartUp
+    // shortcut, all-users logon task, and — once payment restriction is
+    // applied — a shell replacement plus its own logon task), so more than
+    // one can fire at the same logon. Only the first instance should show
+    // the lock screen; a second one fighting it for fullscreen/topmost is
+    // what shows up as the blue screen flickering or appearing twice.
+    if emi_device_agent::single_instance::already_running() {
+        return Ok(());
+    }
+
     let result = emi_device_agent::ui::run();
     if let Err(error) = &result {
         let _ = std::fs::write(
