@@ -124,6 +124,10 @@ pub struct DeviceHealth {
     pub device_id: Uuid,
     pub hostname: String,
     pub os_version: String,
+    #[serde(default)]
+    pub manufacturer: String,
+    #[serde(default)]
+    pub model: String,
     pub agent_version: String,
     pub disk_free_bytes: u64,
     pub battery_percent: Option<u8>,
@@ -139,6 +143,8 @@ pub enum BiosProvider {
     Dell,
     Hp,
     Lenovo,
+    Asus,
+    Acer,
     Unsupported,
 }
 
@@ -325,6 +331,8 @@ mod tests {
             device_id: Uuid::new_v4(),
             hostname: "host".into(),
             os_version: "Windows 11".into(),
+            manufacturer: "Lenovo".into(),
+            model: "ThinkPad".into(),
             agent_version: "0.2.0".into(),
             disk_free_bytes: 42,
             battery_percent: Some(77),
@@ -340,6 +348,25 @@ mod tests {
             serde_json::from_str::<DeviceHealth>(&encoded).expect("deserialize"),
             health
         );
+    }
+
+    #[test]
+    fn older_health_snapshots_without_hardware_names_still_load() {
+        let json = r#"{
+            "device_id":"6fa459ea-ee8a-3ca4-894e-db77e160355e",
+            "hostname":"host",
+            "os_version":"Windows 11",
+            "agent_version":"0.6.24",
+            "disk_free_bytes":42,
+            "battery_percent":null,
+            "secure_boot":true,
+            "winget_available":true,
+            "bios_provider":"dell",
+            "observed_at":"2026-09-16T10:00:00Z"
+        }"#;
+        let health = serde_json::from_str::<DeviceHealth>(json).expect("legacy health snapshot");
+        assert!(health.manufacturer.is_empty());
+        assert!(health.model.is_empty());
     }
 
     #[test]

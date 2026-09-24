@@ -42,6 +42,12 @@ if (Test-Path $dataDir) {
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item $exe (Join-Path $InstallDir 'emi-device-agent.exe') -Force
 Copy-Item $uiExe (Join-Path $InstallDir 'emi-device-ui.exe') -Force
+foreach ($scriptName in 'Install-BiosAdapter.ps1', 'Manage-BiosPassword.ps1', 'Set-PaymentRestriction.ps1', 'Remove-PaymentRestriction.ps1') {
+  $scriptPath = Join-Path $PSScriptRoot $scriptName
+  if (Test-Path -LiteralPath $scriptPath) {
+    Copy-Item $scriptPath (Join-Path $InstallDir $scriptName) -Force
+  }
+}
 $agent = Join-Path $InstallDir 'emi-device-agent.exe'
 
 if (-not $SkipWingetBootstrap) {

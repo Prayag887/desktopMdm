@@ -112,16 +112,19 @@ fn run(once: bool) -> anyhow::Result<()> {
 
 fn collect_health(device_id: Uuid) -> DeviceHealth {
     let disks = Disks::new_with_refreshed_list();
+    let (manufacturer, model) = computer_system_identity();
     DeviceHealth {
         device_id,
         hostname: hostname(),
         os_version: System::long_os_version().unwrap_or_else(|| "unknown".into()),
+        bios_provider: bios_provider_from_manufacturer(&manufacturer),
+        manufacturer,
+        model,
         agent_version: env!("CARGO_PKG_VERSION").into(),
         disk_free_bytes: disks.iter().map(sysinfo::Disk::available_space).sum(),
         battery_percent: battery_status(),
         secure_boot: secure_boot_status(),
         winget_available: executable_available("winget"),
-        bios_provider: detect_bios_provider(),
         observed_at: Utc::now(),
     }
 }
@@ -266,7 +269,7 @@ fn battery_status() -> Option<u8> {
         None
     }
 }
-fn detect_bios_provider() -> BiosProvider {
+fn computer_system_identity() -> (String, String) {
     #[cfg(windows)]
     {
         let output = Command::new("powershell.exe")
@@ -274,23 +277,43 @@ fn detect_bios_provider() -> BiosProvider {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "(Get-CimInstance Win32_ComputerSystem).Manufacturer",
+                "$c=Get-CimInstance Win32_ComputerSystem; $c.Manufacturer; $c.Model",
             ])
             .output();
-        if let Ok(output) = output {
-            let m = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
-            if m.contains("dell") {
-                return BiosProvider::Dell;
-            }
-            if m.contains("hewlett") || m.contains("hp") {
-                return BiosProvider::Hp;
-            }
-            if m.contains("lenovo") {
-                return BiosProvider::Lenovo;
+        if let Ok(output) = output
+            && output.status.success()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+            if let Some(manufacturer) = lines.next() {
+                return (
+                    manufacturer.to_string(),
+                    lines.next().unwrap_or("Unknown model").to_string(),
+                );
             }
         }
     }
-    BiosProvider::Unsupported
+    ("Unknown manufacturer".into(), "Unknown model".into())
+}
+
+fn bios_provider_from_manufacturer(manufacturer: &str) -> BiosProvider {
+    let manufacturer = manufacturer.to_ascii_lowercase();
+    if manufacturer.contains("dell") {
+        BiosProvider::Dell
+    } else if manufacturer.contains("hewlett")
+        || manufacturer == "hp"
+        || manufacturer.starts_with("hp ")
+    {
+        BiosProvider::Hp
+    } else if manufacturer.contains("lenovo") {
+        BiosProvider::Lenovo
+    } else if manufacturer.contains("asus") || manufacturer.contains("asustek") {
+        BiosProvider::Asus
+    } else if manufacturer.contains("acer") {
+        BiosProvider::Acer
+    } else {
+        BiosProvider::Unsupported
+    }
 }
 
 fn data_dir() -> anyhow::Result<PathBuf> {
@@ -317,6 +340,29 @@ mod tests {
         assert_eq!(health.agent_version, env!("CARGO_PKG_VERSION"));
         assert!(!health.hostname.is_empty());
         assert!(!health.os_version.is_empty());
+        assert!(!health.manufacturer.is_empty());
+        assert!(!health.model.is_empty());
+    }
+    #[test]
+    fn maps_common_laptop_manufacturers_to_firmware_adapters() {
+        assert_eq!(
+            bios_provider_from_manufacturer("Dell Inc."),
+            BiosProvider::Dell
+        );
+        assert_eq!(bios_provider_from_manufacturer("HP"), BiosProvider::Hp);
+        assert_eq!(
+            bios_provider_from_manufacturer("LENOVO"),
+            BiosProvider::Lenovo
+        );
+        assert_eq!(
+            bios_provider_from_manufacturer("ASUSTeK COMPUTER INC."),
+            BiosProvider::Asus
+        );
+        assert_eq!(bios_provider_from_manufacturer("Acer"), BiosProvider::Acer);
+        assert_eq!(
+            bios_provider_from_manufacturer("Framework"),
+            BiosProvider::Unsupported
+        );
     }
     #[test]
     fn local_config_does_not_retain_legacy_server_credentials() {

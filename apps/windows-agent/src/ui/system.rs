@@ -107,6 +107,30 @@ fn dell_cctk_path() -> Option<PathBuf> {
     .find(|path| path.exists())
 }
 
+fn hp_cmsl_path() -> Option<PathBuf> {
+    let program_files = std::env::var_os("ProgramFiles")?;
+    ["HPCMSL", "HP.ClientManagement"]
+        .into_iter()
+        .map(|module| {
+            PathBuf::from(&program_files)
+                .join("WindowsPowerShell/Modules")
+                .join(module)
+        })
+        .find(|path| path.exists())
+}
+
+fn asus_act_path() -> Option<PathBuf> {
+    [
+        r"C:\Program Files\ASUS\ASUS BIOS Config Tool\act.exe",
+        r"C:\Program Files\ASUS\ACT\act.exe",
+        r"C:\Program Files (x86)\ASUS\ASUS BIOS Config Tool\act.exe",
+        r"C:\Program Files (x86)\ASUS\ACT\act.exe",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|path| path.exists())
+}
+
 /// Read-only status of the OEM firmware adapter for the detected manufacturer:
 /// `(present, message)`. Cheap enough to call per frame (a file check for Dell;
 /// constant answers otherwise). No firmware is touched.
@@ -123,11 +147,29 @@ pub(crate) fn bios_adapter_status(provider: BiosProvider) -> (bool, String) {
         }
         BiosProvider::Lenovo => (
             true,
-            "Lenovo uses built-in BIOS WMI; no adapter download needed".to_string(),
+            "Lenovo BIOS WMI detected as the built-in adapter".to_string(),
         ),
-        BiosProvider::Hp => (
+        BiosProvider::Hp => {
+            let present = hp_cmsl_path().is_some();
+            let message = if present {
+                "HP Client Management Script Library detected"
+            } else {
+                "HP CMSL required — install to enable firmware management"
+            };
+            (present, message.to_string())
+        }
+        BiosProvider::Asus => {
+            let present = asus_act_path().is_some();
+            let message = if present {
+                "ASUS BIOS Configuration Tool detected"
+            } else {
+                "ASUS ACT is required and must be obtained for this model"
+            };
+            (present, message.to_string())
+        }
+        BiosProvider::Acer => (
             false,
-            "HP CMSL required — install to enable firmware management".to_string(),
+            "Acer does not publish a universal in-Windows password adapter".to_string(),
         ),
         BiosProvider::Unsupported => (
             false,

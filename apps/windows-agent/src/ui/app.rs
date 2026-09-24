@@ -14,6 +14,11 @@ use super::system::{
 };
 use crate::bluescreen::BluescreenSession;
 
+pub(crate) enum OperationEvent {
+    Progress { fraction: f32, message: String },
+    Finished(String),
+}
+
 /// Trusted owner public key (Ed25519, hex). The matching SIGNING key stays
 /// offline with the owner and mints unlock tokens; only its holder can release a
 /// device. Replace this LAB key with your own from
@@ -33,12 +38,15 @@ pub(crate) struct DeviceApp {
     pub(crate) health: Option<DeviceHealth>,
     pub(crate) service_running: bool,
     pub(crate) status: String,
-    pub(crate) result_rx: Option<Receiver<String>>,
+    pub(crate) result_rx: Option<Receiver<OperationEvent>>,
+    pub(crate) operation_progress: Option<f32>,
+    pub(crate) operation_label: String,
     pub(crate) last_refresh: Instant,
     pub(crate) tab: usize,
     pub(crate) current_password: Zeroizing<String>,
     pub(crate) new_password: Zeroizing<String>,
     pub(crate) confirm_password: Zeroizing<String>,
+    pub(crate) confirm_firmware_restart: bool,
     pub(crate) lan_ip: String,
     pub(crate) consent: bool,
     pub(crate) bluescreen: Option<BluescreenSession>,
@@ -74,11 +82,14 @@ impl DeviceApp {
             service_running: service_is_running(),
             status: "Standalone mode — no server or enrollment required".into(),
             result_rx: None,
+            operation_progress: None,
+            operation_label: String::new(),
             last_refresh: Instant::now(),
             tab: 0,
             current_password: Zeroizing::new(String::new()),
             new_password: Zeroizing::new(String::new()),
             confirm_password: Zeroizing::new(String::new()),
+            confirm_firmware_restart: false,
             lan_ip: local_ip_address::local_ip()
                 .map_or_else(|_| "127.0.0.1".into(), |ip| ip.to_string()),
             consent: false,
@@ -128,14 +139,23 @@ impl eframe::App for DeviceApp {
         }
         if let Some(receiver) = &self.result_rx {
             match receiver.try_recv() {
-                Ok(result) => {
+                Ok(OperationEvent::Progress { fraction, message }) => {
+                    self.operation_progress = Some(fraction.clamp(0.0, 1.0));
+                    self.operation_label = message;
+                    context.request_repaint_after(Duration::from_millis(100));
+                }
+                Ok(OperationEvent::Finished(result)) => {
                     self.status = result;
                     self.result_rx = None;
+                    self.operation_progress = None;
+                    self.operation_label.clear();
                     self.reload();
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.status = "Health refresh worker stopped unexpectedly".into();
                     self.result_rx = None;
+                    self.operation_progress = None;
+                    self.operation_label.clear();
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     context.request_repaint_after(Duration::from_millis(200));
@@ -193,6 +213,14 @@ impl eframe::App for DeviceApp {
                     });
                 }
                 ui.add_space(12.0);
+                if let Some(progress) = self.operation_progress {
+                    ui.add(
+                        egui::ProgressBar::new(progress)
+                            .show_percentage()
+                            .text(&self.operation_label),
+                    );
+                    ui.add_space(8.0);
+                }
                 ui.label(&self.status);
                 ui.separator();
                 ui.small("Local-first Rust desktop app. QR dismissal uses a temporary one-time LAN link only during the simulation. An administrator can uninstall normally.");

@@ -1,50 +1,221 @@
 //! The non-locked tabs: overview/health, firmware prep, and restriction setup
 //! plus the manual lock controls that drive the provisioning scripts.
 
+use std::fs;
+use std::io::Write as _;
 use std::os::windows::process::CommandExt as _;
-use std::process::Command;
-use std::sync::mpsc;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Sender};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use base64::Engine as _;
 use eframe::egui::{self, Color32};
 use emi_core::BiosProvider;
 use qrcode::{Color, QrCode};
+use uuid::Uuid;
+use zeroize::Zeroizing;
 
-use super::app::DeviceApp;
+use super::app::{DeviceApp, OperationEvent};
 use super::system::{
     CREATE_NO_WINDOW, agent_path, bios_adapter_status, read_health, service_is_running,
 };
 use crate::bluescreen::BluescreenSession;
 
+fn provider_name(provider: BiosProvider) -> &'static str {
+    match provider {
+        BiosProvider::Dell => "Dell",
+        BiosProvider::Hp => "HP",
+        BiosProvider::Lenovo => "Lenovo",
+        BiosProvider::Asus => "Asus",
+        BiosProvider::Acer => "Acer",
+        BiosProvider::Unsupported => "Other",
+    }
+}
+
+fn adjacent_script(name: &str) -> Result<PathBuf, String> {
+    let path = std::env::current_exe()
+        .map_err(|error| format!("Cannot locate {name}: {error}"))?
+        .with_file_name(name);
+    if path.exists() {
+        Ok(path)
+    } else {
+        Err(format!("{name} was not found beside the app."))
+    }
+}
+
+fn powershell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn read_progress(path: &Path) -> Option<(f32, String)> {
+    let value = fs::read_to_string(path).ok()?;
+    let (percent, message) = value
+        .trim_start_matches('\u{feff}')
+        .trim()
+        .split_once('|')?;
+    Some((percent.parse::<f32>().ok()? / 100.0, message.to_string()))
+}
+
+fn run_elevated_script(
+    script: &Path,
+    arguments: &[(&str, &str)],
+    progress_path: &Path,
+    tx: &Sender<OperationEvent>,
+) -> Result<(), String> {
+    let mut items = vec![
+        powershell_quote("-NoProfile"),
+        powershell_quote("-NonInteractive"),
+        powershell_quote("-ExecutionPolicy"),
+        powershell_quote("Bypass"),
+        powershell_quote("-File"),
+        powershell_quote(&script.to_string_lossy()),
+    ];
+    for (name, value) in arguments {
+        items.push(powershell_quote(name));
+        items.push(powershell_quote(value));
+    }
+    let outer = format!(
+        "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath 'powershell.exe' -ArgumentList {} -Verb RunAs -PassThru -Wait; exit $p.ExitCode",
+        items.join(",")
+    );
+    let mut child = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &outer])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    let mut last_progress = None;
+    let mut last_message = None;
+    loop {
+        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+            let _ = fs::remove_file(progress_path);
+            return if status.success() {
+                Ok(())
+            } else {
+                Err(last_message.unwrap_or_else(|| {
+                    format!("administrator action canceled or failed: {status}")
+                }))
+            };
+        }
+        if let Some((fraction, message)) = read_progress(progress_path)
+            && last_progress != Some(fraction)
+        {
+            let _ = tx.send(OperationEvent::Progress {
+                fraction,
+                message: message.clone(),
+            });
+            last_progress = Some(fraction);
+            last_message = Some(message);
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn protect_secret(secret: &str) -> Result<String, String> {
+    let command = "$v=[Console]::In.ReadToEnd(); $b=[Text.Encoding]::UTF8.GetBytes($v); [Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect($b,$null,[Security.Cryptography.DataProtectionScope]::LocalMachine)); [Array]::Clear($b,0,$b.Length)";
+    let mut child = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", command])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|error| format!("could not protect credentials: {error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "could not open the credential protector".to_string())?
+        .write_all(secret.as_bytes())
+        .map_err(|error| format!("could not protect credentials: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("credential protector failed: {error}"))?;
+    if !output.status.success() {
+        return Err("Windows could not protect the BIOS credentials".into());
+    }
+    String::from_utf8(output.stdout)
+        .map(|value| value.trim().to_string())
+        .map_err(|_| "Windows returned an invalid protected credential".into())
+}
+
 impl DeviceApp {
-    pub(crate) fn render_firmware(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Firmware credentials");
-        ui.label("Prepare a BIOS password change");
-        ui.add_space(12.0);
-        let provider = self
-            .health
-            .as_ref()
-            .map_or(BiosProvider::Unsupported, |health| health.bios_provider);
-        let (adapter_present, adapter_status) = bios_adapter_status(provider);
+    fn render_bios_adapter(
+        &mut self,
+        ui: &mut egui::Ui,
+        provider: BiosProvider,
+        adapter_present: bool,
+        adapter_status: &str,
+    ) {
         let color = if adapter_present {
             Color32::from_rgb(30, 150, 85)
         } else {
             Color32::from_rgb(230, 180, 100)
         };
-        ui.colored_label(color, &adapter_status);
+        ui.colored_label(color, adapter_status);
+        if matches!(provider, BiosProvider::Dell | BiosProvider::Hp) {
+            if ui
+                .add_enabled(
+                    self.result_rx.is_none(),
+                    egui::Button::new("Download & install OEM adapter (admin)"),
+                )
+                .clicked()
+            {
+                self.install_bios_adapter();
+            }
+            ui.small("Download and installation progress is shown below. Dell uses WinGet; HP uses the PowerShell Gallery.");
+        } else if provider == BiosProvider::Asus && !adapter_present {
+            ui.small("Install ASUS BIOS Configuration Tool (ACT) from the support page for this exact business model, then reopen this screen.");
+        } else if provider == BiosProvider::Lenovo {
+            ui.small("No download is needed. Lenovo exposes its supported password-change interface through built-in WMI.");
+        } else {
+            ui.small("This manufacturer does not expose a safe universal Windows password API. Use the UEFI fallback below.");
+        }
+    }
+
+    fn render_firmware_fallback(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(18.0);
+        ui.separator();
+        ui.label("Universal fallback");
+        ui.checkbox(
+            &mut self.confirm_firmware_restart,
+            "I have saved my work and want to restart into UEFI firmware settings",
+        );
         if ui
             .add_enabled(
-                self.result_rx.is_none(),
-                egui::Button::new("Check & install OEM adapter (admin)"),
+                self.confirm_firmware_restart && self.result_rx.is_none(),
+                egui::Button::new("Restart into UEFI settings"),
             )
             .clicked()
         {
-            self.install_bios_adapter();
+            self.restart_into_firmware();
         }
-        ui.small("Fully automatic: fetches winget first if the device lacks it, then installs the signed OEM tool via winget (Dell) or PSGallery (HP). Lenovo needs none. This never writes to firmware; applying a password stays disabled pending exact-model support and testing.");
-        ui.label("Firmware passwords cannot be read back. Enter the current password only if you know it. Your exact manufacturer and model are required before changes can be enabled.");
+        ui.small("Available on UEFI systems from Acer, ASUS, Dell, HP, Lenovo, Microsoft, MSI, Samsung, and other manufacturers. The firmware screen itself controls which password types the model supports.");
+    }
+
+    pub(crate) fn render_firmware(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Firmware credentials");
+        ui.label("Set or change this laptop's BIOS administrator password");
+        ui.add_space(12.0);
+        let provider = self
+            .health
+            .as_ref()
+            .map_or(BiosProvider::Unsupported, |health| health.bios_provider);
+        if let Some(health) = &self.health {
+            let manufacturer = if health.manufacturer.is_empty() {
+                provider_name(provider)
+            } else {
+                &health.manufacturer
+            };
+            let model = if health.model.is_empty() {
+                "Model not reported"
+            } else {
+                &health.model
+            };
+            ui.label(format!("Detected device: {manufacturer} {model}"));
+        }
+        let (adapter_present, adapter_status) = bios_adapter_status(provider);
+        self.render_bios_adapter(ui, provider, adapter_present, &adapter_status);
+        ui.label("BIOS passwords cannot be read back. Leave Current blank only when creating the first password.");
         ui.add_space(16.0);
         for (label, value) in [
             ("Current BIOS password", &mut *self.current_password),
@@ -63,13 +234,61 @@ impl DeviceApp {
         if !self.confirm_password.is_empty() && self.new_password != self.confirm_password {
             ui.colored_label(Color32::LIGHT_RED, "New passwords do not match.");
         }
+        let has_line_break = self
+            .current_password
+            .chars()
+            .chain(self.new_password.chars())
+            .any(|character| matches!(character, '\r' | '\n' | '\0'));
+        if has_line_break {
+            ui.colored_label(
+                Color32::LIGHT_RED,
+                "BIOS passwords cannot contain line breaks or NUL characters.",
+            );
+        }
+        let lenovo_delimiter = provider == BiosProvider::Lenovo
+            && self
+                .current_password
+                .chars()
+                .chain(self.new_password.chars())
+                .any(|character| character == ';');
+        if lenovo_delimiter {
+            ui.colored_label(
+                Color32::LIGHT_RED,
+                "Lenovo's WMI interface cannot safely accept a semicolon in a password.",
+            );
+        }
+        let direct_supported = adapter_present
+            && !matches!(provider, BiosProvider::Acer | BiosProvider::Unsupported)
+            && !(provider == BiosProvider::Lenovo && self.current_password.is_empty());
+        let passwords_valid = !(self.new_password.is_empty()
+            || self.new_password != self.confirm_password
+            || has_line_break
+            || lenovo_delimiter);
+        let action = if self.current_password.is_empty() {
+            "Set BIOS administrator password"
+        } else {
+            "Change BIOS administrator password"
+        };
         ui.horizontal(|ui| {
-            ui.add_enabled(false, egui::Button::new("Apply BIOS password change"));
+            if ui
+                .add_enabled(
+                    direct_supported && passwords_valid && self.result_rx.is_none(),
+                    egui::Button::new(action),
+                )
+                .clicked()
+            {
+                self.change_bios_password(provider);
+            }
             if ui.button("Clear fields").clicked() {
                 self.clear_passwords();
             }
         });
-        ui.small("Fields are masked and never saved, logged or sent to the QR page. Leaving this tab clears them. No firmware change is performed in this build.");
+        if provider == BiosProvider::Lenovo && self.current_password.is_empty() {
+            ui.small("Lenovo requires the first supervisor password to be created inside UEFI setup; after that, this app can change it.");
+        }
+        ui.small("The action requires administrator approval. Passwords are masked, DPAPI-protected while crossing the UAC boundary, deleted immediately afterward, never logged, and cleared when you leave this tab.");
+
+        self.render_firmware_fallback(ui);
     }
 
     /// Auto-install the OEM firmware adapter for the detected manufacturer from a
@@ -84,50 +303,120 @@ impl DeviceApp {
             .health
             .as_ref()
             .map_or(BiosProvider::Unsupported, |health| health.bios_provider);
-        // Inner elevated script. The Dell path bootstraps winget automatically
-        // (download the official App Installer bundle) when it is missing, then
-        // installs the tool. HP uses PSGallery (no winget). Lenovo/other: nothing.
-        let inner: &str = match provider {
-            BiosProvider::Dell => {
-                "if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { $ProgressPreference='SilentlyContinue'; $b=Join-Path $env:TEMP 'winget-bootstrap.msixbundle'; Invoke-WebRequest 'https://aka.ms/getwinget' -OutFile $b; Add-AppxPackage -Path $b; Remove-Item $b -Force -ErrorAction SilentlyContinue } ; winget install --id Dell.CommandConfigure -e --accept-source-agreements --accept-package-agreements"
-            }
-            BiosProvider::Hp => "Install-Module -Name HPCMSL -Force -AcceptLicense -Scope AllUsers",
-            BiosProvider::Lenovo => {
-                self.status = "Lenovo uses built-in BIOS WMI; no adapter download needed.".into();
-                return;
-            }
-            BiosProvider::Unsupported => {
-                self.status = "Manufacturer not supported; no OEM adapter to install.".into();
+        if !matches!(provider, BiosProvider::Dell | BiosProvider::Hp) {
+            self.status = "This manufacturer has no automatic adapter download.".into();
+            return;
+        }
+        let script = match adjacent_script("Install-BiosAdapter.ps1") {
+            Ok(path) => path,
+            Err(error) => {
+                self.status = error;
                 return;
             }
         };
-        // Pass the multi-step script as a base64 UTF-16LE -EncodedCommand so its
-        // quotes/semicolons survive the elevated Start-Process invocation intact.
-        let utf16: Vec<u8> = inner.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
-        self.status = "Installing OEM adapter (elevated; fetches winget if missing)…".into();
+        let progress_path =
+            std::env::temp_dir().join(format!("emi-bios-progress-{}.txt", Uuid::new_v4()));
+        self.status = "Downloading the OEM firmware adapter…".into();
+        self.operation_progress = Some(0.01);
+        self.operation_label = "Preparing download".into();
         let (tx, rx) = mpsc::channel();
         self.result_rx = Some(rx);
         thread::spawn(move || {
-            let outer = format!(
-                "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','{encoded}' -Verb RunAs -PassThru -Wait; exit $p.ExitCode",
+            let provider = provider_name(provider);
+            let progress = progress_path.to_string_lossy().into_owned();
+            let result = run_elevated_script(
+                &script,
+                &[("-Provider", provider), ("-ProgressPath", &progress)],
+                &progress_path,
+                &tx,
+            )
+            .map_or_else(
+                |error| format!("Adapter installation failed: {error}"),
+                |()| "OEM firmware adapter installed and ready.".into(),
             );
-            let result = Command::new("powershell.exe")
-                .args(["-NoProfile", "-NonInteractive", "-Command", &outer])
-                .creation_flags(CREATE_NO_WINDOW)
-                .status()
-                .map_or_else(
-                    |error| format!("Adapter install failed: {error}"),
-                    |status| {
-                        if status.success() {
-                            "OEM adapter installed.".into()
-                        } else {
-                            format!("Adapter install canceled or failed: {status}")
-                        }
-                    },
-                );
-            let _ = tx.send(result);
+            let _ = tx.send(OperationEvent::Finished(result));
         });
+    }
+
+    fn change_bios_password(&mut self, provider: BiosProvider) {
+        if self.result_rx.is_some() {
+            return;
+        }
+        let script = match adjacent_script("Manage-BiosPassword.ps1") {
+            Ok(path) => path,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
+        let current = Zeroizing::new(std::mem::take(&mut *self.current_password));
+        let new = Zeroizing::new(std::mem::take(&mut *self.new_password));
+        self.confirm_password.clear();
+        let identifier = Uuid::new_v4();
+        let secret_path = std::env::temp_dir().join(format!("emi-bios-secrets-{identifier}.json"));
+        let progress_path =
+            std::env::temp_dir().join(format!("emi-bios-progress-{identifier}.txt"));
+        self.status = format!("Applying the {} BIOS password…", provider_name(provider));
+        self.operation_progress = Some(0.01);
+        self.operation_label = "Protecting credentials".into();
+        let (tx, rx) = mpsc::channel();
+        self.result_rx = Some(rx);
+        thread::spawn(move || {
+            let result = (|| -> Result<(), String> {
+                let protected_current = if current.is_empty() {
+                    String::new()
+                } else {
+                    protect_secret(&current)?
+                };
+                let protected_new = protect_secret(&new)?;
+                let payload = serde_json::json!({
+                    "current": protected_current,
+                    "new": protected_new,
+                });
+                fs::write(
+                    &secret_path,
+                    serde_json::to_vec(&payload).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| format!("could not stage protected credentials: {error}"))?;
+                let provider = provider_name(provider);
+                let secret = secret_path.to_string_lossy().into_owned();
+                let progress = progress_path.to_string_lossy().into_owned();
+                run_elevated_script(
+                    &script,
+                    &[
+                        ("-Provider", provider),
+                        ("-SecretPath", &secret),
+                        ("-ProgressPath", &progress),
+                    ],
+                    &progress_path,
+                    &tx,
+                )
+            })();
+            let _ = fs::remove_file(&secret_path);
+            let message = result.map_or_else(
+                |error| format!("BIOS password was not changed: {error}"),
+                |()| {
+                    "BIOS password updated. Restart the PC before relying on the new credential."
+                        .into()
+                },
+            );
+            let _ = tx.send(OperationEvent::Finished(message));
+        });
+    }
+
+    fn restart_into_firmware(&mut self) {
+        self.clear_passwords();
+        self.confirm_firmware_restart = false;
+        let command = "$ErrorActionPreference='Stop'; Start-Process -FilePath 'shutdown.exe' -ArgumentList '/r','/fw','/t','0' -Verb RunAs -Wait";
+        let result = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", command])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+        self.status = match result {
+            Ok(status) if status.success() => "Restarting into UEFI firmware settings…".into(),
+            Ok(status) => format!("Windows could not schedule the UEFI restart: {status}"),
+            Err(error) => format!("Windows could not open UEFI settings: {error}"),
+        };
     }
 
     pub(crate) fn render_bluescreen(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
@@ -343,7 +632,7 @@ impl DeviceApp {
                         }
                     },
                 );
-            let _ = tx.send(result);
+            let _ = tx.send(OperationEvent::Finished(result));
         });
     }
 
@@ -367,7 +656,7 @@ impl DeviceApp {
                 |error| format!("Refresh failed: {error}"),
                 |status| if status.success() { "Local device health refreshed".into() } else { format!("Refresh canceled or failed: {status}") }
             );
-            let _ = tx.send(result);
+            let _ = tx.send(OperationEvent::Finished(result));
         });
     }
 
@@ -389,6 +678,22 @@ impl DeviceApp {
                         for (label, value) in [
                             ("Device", health.hostname.clone()),
                             ("Operating system", health.os_version.clone()),
+                            (
+                                "Manufacturer",
+                                if health.manufacturer.is_empty() {
+                                    provider_name(health.bios_provider).into()
+                                } else {
+                                    health.manufacturer.clone()
+                                },
+                            ),
+                            (
+                                "Model",
+                                if health.model.is_empty() {
+                                    "Not reported".into()
+                                } else {
+                                    health.model.clone()
+                                },
+                            ),
                             ("Device ID", health.device_id.to_string()),
                             ("App version", env!("CARGO_PKG_VERSION").into()),
                             (
@@ -421,16 +726,6 @@ impl DeviceApp {
                                     "Available"
                                 } else {
                                     "Not detected"
-                                }
-                                .into(),
-                            ),
-                            (
-                                "Manufacturer",
-                                match health.bios_provider {
-                                    BiosProvider::Dell => "Dell",
-                                    BiosProvider::Hp => "HP",
-                                    BiosProvider::Lenovo => "Lenovo",
-                                    BiosProvider::Unsupported => "Other / unknown",
                                 }
                                 .into(),
                             ),

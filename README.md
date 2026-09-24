@@ -5,13 +5,19 @@ A lightweight, standalone Windows desktop app written in Rust with a native egui
 ## What remains
 
 - Native desktop window: local device identity, operating system, storage, battery, Secure Boot status, and manufacturer detection.
-- BIOS password preparation form with masked current/new/confirmation fields. Actual writes are disabled until a supported, exact-model OEM adapter is implemented. Passwords are never saved or sent to the QR page and are cleared when leaving the tab.
+- BIOS administrator-password workflow with masked current/new/confirmation fields, OEM adapter download progress, manufacturer/model detection, and elevated set/change actions for supported Dell, HP, Lenovo, and ASUS firmware interfaces. Acer and every other UEFI laptop can be restarted directly into firmware settings from the same screen.
 - Permission-gated fullscreen blue-screen **simulation**, with a QR dismissal page served temporarily by the desktop app on one private LAN interface. No actual crash or OS lockout.
 - Optional Windows companion service: refreshes a local health snapshot every five minutes and after resume.
 - Local device/EMI domain types for future desktop workflows.
 - Administrator installer/uninstaller and Windows builds in GitHub Actions.
 
-This is the desktop-only foundation, not a complete EMI administration product. Payment editing, reminder scheduling, local administrator controls, BIOS password changes, Windows account password changes, and remote device control are not implemented in this version. They must be designed as desktop workflows separately. The app is normally uninstallable by an authorized administrator.
+This is the desktop-only foundation, not a complete EMI administration product. Payment editing, reminder scheduling, Windows account password changes, and remote device control are not implemented in this version. BIOS password management is local-only, requires UAC approval, and is enabled only when the detected model exposes a documented OEM interface. The app is normally uninstallable by an authorized administrator.
+
+## BIOS passwords
+
+Open **BIOS passwords** to install the detected OEM adapter and watch its staged download/install progress. Enter matching new-password values, plus the current password when changing an existing credential. Dell uses Command | Configure, HP uses CMSL, Lenovo uses built-in WMI for changes, and compatible ASUS business devices use ACT. Lenovo requires the first supervisor password to be created in UEFI setup; Acer does not publish a universal in-Windows adapter. The **Restart into UEFI settings** fallback covers those devices and other manufacturers.
+
+Firmware support is model-specific even within one brand. The app verifies that the vendor tool or interface exists and reports the OEM error instead of trying an unrecognized generic command. Forgotten passwords cannot be recovered by this app.
 
 ## Blue screen mode
 
@@ -46,7 +52,7 @@ To uninstall, run `.\\uninstall.ps1` as administrator. Local data is retained fo
 State lives in `%PROGRAMDATA%\\EmiDeviceAgent`:
 
 - `config.json` / `ui-config.json`: local UUID only.
-- `health.json`: local health snapshot, never uploaded.
+- `health.json`: local health snapshot, including manufacturer/model, never uploaded.
 
 When the updated companion initializes an existing installation, it reuses the old device UUID and rewrites configuration without the old server/token fields. Other historical device data is not deleted. Corrupt configuration returns an error instead of silently replacing an identity.
 
