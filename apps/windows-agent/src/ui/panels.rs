@@ -14,7 +14,7 @@ use eframe::egui::{self, Color32};
 use emi_core::BiosProvider;
 use qrcode::{Color, QrCode};
 use uuid::Uuid;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize as _, Zeroizing};
 
 use super::app::{BiosPasswordAction, DeviceApp, OperationEvent};
 use super::system::{
@@ -464,7 +464,6 @@ impl DeviceApp {
         };
         let current = Zeroizing::new(std::mem::take(&mut *self.current_password));
         let new = Zeroizing::new(std::mem::take(&mut *self.new_password));
-        use zeroize::Zeroize as _;
         self.confirm_password.zeroize();
         self.confirm_disable_bios = false;
         let identifier = Uuid::new_v4();
