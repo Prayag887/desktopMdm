@@ -2,6 +2,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)][ValidateSet('Dell', 'HP', 'Lenovo', 'Asus')][string]$Provider,
+  [Parameter(Mandatory)][ValidateSet('Create', 'Change', 'Disable')][string]$Mode,
   [Parameter(Mandatory)][string]$SecretPath,
   [Parameter(Mandatory)][string]$ProgressPath
 )
@@ -46,11 +47,16 @@ try {
       [Security.Cryptography.DataProtectionScope]::LocalMachine)
     $current = [Text.Encoding]::UTF8.GetString($currentBytes)
   }
-  $newBytes = [Security.Cryptography.ProtectedData]::Unprotect(
-    [Convert]::FromBase64String($payload.new), $null,
-    [Security.Cryptography.DataProtectionScope]::LocalMachine)
-  $new = [Text.Encoding]::UTF8.GetString($newBytes)
-  if ([string]::IsNullOrEmpty($new)) { throw 'The new BIOS password cannot be empty.' }
+  if ($payload.new) {
+    $newBytes = [Security.Cryptography.ProtectedData]::Unprotect(
+      [Convert]::FromBase64String($payload.new), $null,
+      [Security.Cryptography.DataProtectionScope]::LocalMachine)
+    $new = [Text.Encoding]::UTF8.GetString($newBytes)
+  }
+  if ($Mode -eq 'Create' -and $current) { throw 'Create mode does not accept a current BIOS password.' }
+  if ($Mode -ne 'Create' -and [string]::IsNullOrEmpty($current)) { throw 'The current BIOS password is required.' }
+  if ($Mode -ne 'Disable' -and [string]::IsNullOrEmpty($new)) { throw 'The new BIOS password cannot be empty.' }
+  if ($Mode -eq 'Disable' -and $new) { throw 'Disable mode does not accept a new BIOS password.' }
 
   Write-BiosProgress 35 "Validating $Provider firmware interface"
   switch ($Provider) {
@@ -59,18 +65,22 @@ try {
         "${env:ProgramFiles(x86)}\Dell\Command Configure\X86_64\cctk.exe",
         "$env:ProgramFiles\Dell\Command Configure\X86_64\cctk.exe"
       ) 'Dell Command | Configure'
-      Write-BiosProgress 65 'Applying Dell BIOS administrator password'
-      $arguments = @("--setuppwd=$new")
-      if ($current) { $arguments += "--valsetuppwd=$current" }
+      Write-BiosProgress 65 "$Mode Dell BIOS administrator password"
+      $arguments = if ($Mode -eq 'Disable') { @('--setuppwd=') } else { @("--setuppwd=$new") }
+      if ($Mode -ne 'Create') { $arguments += "--valsetuppwd=$current" }
       & $tool @arguments | Out-Null
       if ($LASTEXITCODE -ne 0) { throw "Dell firmware command failed with exit code $LASTEXITCODE" }
     }
     'HP' {
       Import-Module HP.ClientManagement -Force -ErrorAction Stop
       $passwordIsSet = Get-HPBIOSSetupPasswordIsSet
-      if ($passwordIsSet -and -not $current) { throw 'The current BIOS password is required.' }
-      Write-BiosProgress 65 'Applying HP BIOS setup password'
-      if ($passwordIsSet) {
+      if ($Mode -eq 'Create' -and $passwordIsSet) { throw 'A BIOS password already exists. Choose Change instead.' }
+      if ($Mode -ne 'Create' -and -not $passwordIsSet) { throw 'No BIOS password is set. Choose Enable / create new instead.' }
+      Write-BiosProgress 65 "$Mode HP BIOS setup password"
+      if ($Mode -eq 'Disable') {
+        Clear-HPBIOSSetupPassword -Password $current -ErrorAction Stop
+      }
+      elseif ($passwordIsSet) {
         Set-HPBIOSSetupPassword -NewPassword $new -Password $current -ErrorAction Stop
       }
       else {
@@ -83,23 +93,24 @@ try {
         throw 'Lenovo only allows the first supervisor password to be created in UEFI setup. Create it there once, then this app can change it.'
       }
       if (-not $current) { throw 'The current Lenovo supervisor password is required.' }
-      if ($current.Contains(';') -or $new.Contains(';')) {
+      if ($current.Contains(';') -or ($new -and $new.Contains(';'))) {
         throw 'This Lenovo WMI interface cannot safely pass a semicolon in a password.'
       }
-      Write-BiosProgress 65 'Changing Lenovo supervisor password'
+      Write-BiosProgress 65 "$Mode Lenovo supervisor password"
+      $lenovoNew = if ($Mode -eq 'Disable') { '' } else { $new }
       $opcode = Get-WmiObject -Namespace root\wmi -Class Lenovo_WmiOpcodeInterface -ErrorAction SilentlyContinue
       if ($opcode) {
         $isMobile = (Get-CimInstance Win32_ComputerSystem).PCSystemType -eq 2
         if (-not $isMobile) { Assert-LenovoResult ($opcode.WmiOpcodeInterface("WmiOpcodePasswordAdmin:$current;")) 'authenticate' }
         Assert-LenovoResult ($opcode.WmiOpcodeInterface('WmiOpcodePasswordType:pap;')) 'select password type'
         Assert-LenovoResult ($opcode.WmiOpcodeInterface("WmiOpcodePasswordCurrent01:$current;")) 'validate current password'
-        Assert-LenovoResult ($opcode.WmiOpcodeInterface("WmiOpcodePasswordNew01:$new;")) 'set new password'
+        Assert-LenovoResult ($opcode.WmiOpcodeInterface("WmiOpcodePasswordNew01:$lenovoNew;")) 'set new password'
         Assert-LenovoResult ($opcode.WmiOpcodeInterface('WmiOpcodePasswordSetUpdate')) 'commit password'
       }
       else {
-        if ($current.Contains(',') -or $new.Contains(',')) { throw 'This legacy Lenovo WMI interface cannot safely pass a comma in a password.' }
+        if ($current.Contains(',') -or $lenovoNew.Contains(',')) { throw 'This legacy Lenovo WMI interface cannot safely pass a comma in a password.' }
         $legacy = Get-WmiObject -Namespace root\wmi -Class Lenovo_SetBiosPassword -ErrorAction Stop
-        Assert-LenovoResult ($legacy.SetBiosPassword("pap,$current,$new,ascii,us;")) 'change password'
+        Assert-LenovoResult ($legacy.SetBiosPassword("pap,$current,$lenovoNew,ascii,us;")) 'change password'
       }
     }
     'Asus' {
@@ -109,8 +120,11 @@ try {
         "${env:ProgramFiles(x86)}\ASUS\ASUS BIOS Config Tool\act.exe",
         "${env:ProgramFiles(x86)}\ASUS\ACT\act.exe"
       ) 'ASUS BIOS Configuration Tool'
-      Write-BiosProgress 65 'Applying ASUS BIOS administrator password'
-      if ($current) {
+      Write-BiosProgress 65 "$Mode ASUS BIOS administrator password"
+      if ($Mode -eq 'Disable') {
+        & $tool --clrpwd --pwd $current --quiet
+      }
+      elseif ($Mode -eq 'Change') {
         & $tool --renewpwd $new --pwd $current --quiet
       }
       else {
@@ -120,10 +134,10 @@ try {
       if ($LASTEXITCODE -ne 0) { throw "ASUS firmware command failed with exit code $LASTEXITCODE" }
     }
   }
-  Write-BiosProgress 100 'BIOS password updated successfully'
+  Write-BiosProgress 100 "BIOS password action completed successfully"
 }
 catch {
-  Write-BiosProgress 0 'Firmware rejected the change; verify the current password and model support'
+  Write-BiosProgress 0 'Firmware rejected the action; verify the password, selected action, and model support'
   throw
 }
 finally {

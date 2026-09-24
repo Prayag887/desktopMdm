@@ -16,7 +16,7 @@ use qrcode::{Color, QrCode};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use super::app::{DeviceApp, OperationEvent};
+use super::app::{BiosPasswordAction, DeviceApp, OperationEvent};
 use super::system::{
     CREATE_NO_WINDOW, agent_path, bios_adapter_status, read_health, service_is_running,
 };
@@ -139,6 +139,79 @@ fn protect_secret(secret: &str) -> Result<String, String> {
 }
 
 impl DeviceApp {
+    fn render_bios_action_selector(&mut self, ui: &mut egui::Ui) -> BiosPasswordAction {
+        ui.label("What do you want to do?");
+        let previous_action = self.bios_password_action;
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(
+                &mut self.bios_password_action,
+                BiosPasswordAction::Create,
+                "Enable / create new",
+            );
+            ui.selectable_value(
+                &mut self.bios_password_action,
+                BiosPasswordAction::Change,
+                "Change password",
+            );
+            ui.selectable_value(
+                &mut self.bios_password_action,
+                BiosPasswordAction::Disable,
+                "Disable password",
+            );
+        });
+        if previous_action != self.bios_password_action {
+            self.clear_passwords();
+        }
+        let action = self.bios_password_action;
+        ui.small(match action {
+            BiosPasswordAction::Create => {
+                "Use this when the laptop does not currently have a BIOS administrator password."
+            }
+            BiosPasswordAction::Change => {
+                "Enter the existing password, then choose its replacement."
+            }
+            BiosPasswordAction::Disable => {
+                "Remove the existing BIOS password. This reduces firmware protection."
+            }
+        });
+        action
+    }
+
+    fn render_bios_password_fields(&mut self, ui: &mut egui::Ui, action: BiosPasswordAction) {
+        if action != BiosPasswordAction::Create {
+            ui.label("Current BIOS password");
+            ui.add(
+                egui::TextEdit::singleline(&mut *self.current_password)
+                    .password(true)
+                    .desired_width(360.0)
+                    .char_limit(128),
+            );
+            ui.add_space(10.0);
+        }
+        if action != BiosPasswordAction::Disable {
+            for (label, value) in [
+                ("New BIOS password", &mut *self.new_password),
+                ("Confirm new password", &mut *self.confirm_password),
+            ] {
+                ui.label(label);
+                ui.add(
+                    egui::TextEdit::singleline(value)
+                        .password(true)
+                        .desired_width(360.0)
+                        .char_limit(128),
+                );
+                ui.add_space(10.0);
+            }
+        }
+        if action == BiosPasswordAction::Disable {
+            ui.checkbox(
+                &mut self.confirm_disable_bios,
+                "I understand this removes the BIOS administrator password",
+            );
+            ui.add_space(8.0);
+        }
+    }
+
     fn render_bios_adapter(
         &mut self,
         ui: &mut egui::Ui,
@@ -193,8 +266,8 @@ impl DeviceApp {
     }
 
     pub(crate) fn render_firmware(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Firmware credentials");
-        ui.label("Set or change this laptop's BIOS administrator password");
+        ui.heading("BIOS password");
+        ui.label("Create, replace, or remove this laptop's BIOS administrator password.");
         ui.add_space(12.0);
         let provider = self
             .health
@@ -214,24 +287,24 @@ impl DeviceApp {
             ui.label(format!("Detected device: {manufacturer} {model}"));
         }
         let (adapter_present, adapter_status) = bios_adapter_status(provider);
-        self.render_bios_adapter(ui, provider, adapter_present, &adapter_status);
-        ui.label("BIOS passwords cannot be read back. Leave Current blank only when creating the first password.");
         ui.add_space(16.0);
-        for (label, value) in [
-            ("Current BIOS password", &mut *self.current_password),
-            ("New BIOS password", &mut *self.new_password),
-            ("Confirm new password", &mut *self.confirm_password),
-        ] {
-            ui.label(label);
-            ui.add(
-                egui::TextEdit::singleline(value)
-                    .password(true)
-                    .desired_width(360.0)
-                    .char_limit(128),
-            );
-            ui.add_space(10.0);
-        }
-        if !self.confirm_password.is_empty() && self.new_password != self.confirm_password {
+        self.render_bios_password_controls(ui, provider, adapter_present, &adapter_status);
+    }
+
+    fn render_bios_password_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        provider: BiosProvider,
+        adapter_present: bool,
+        adapter_status: &str,
+    ) {
+        let action = self.render_bios_action_selector(ui);
+        ui.add_space(14.0);
+        self.render_bios_password_fields(ui, action);
+        if action != BiosPasswordAction::Disable
+            && !self.confirm_password.is_empty()
+            && self.new_password != self.confirm_password
+        {
             ui.colored_label(Color32::LIGHT_RED, "New passwords do not match.");
         }
         let has_line_break = self
@@ -257,36 +330,76 @@ impl DeviceApp {
                 "Lenovo's WMI interface cannot safely accept a semicolon in a password.",
             );
         }
-        let direct_supported = adapter_present
-            && !matches!(provider, BiosProvider::Acer | BiosProvider::Unsupported)
-            && !(provider == BiosProvider::Lenovo && self.current_password.is_empty());
-        let passwords_valid = !(self.new_password.is_empty()
-            || self.new_password != self.confirm_password
-            || has_line_break
-            || lenovo_delimiter);
-        let action = if self.current_password.is_empty() {
-            "Set BIOS administrator password"
-        } else {
-            "Change BIOS administrator password"
+        let provider_supported =
+            adapter_present && !matches!(provider, BiosProvider::Acer | BiosProvider::Unsupported);
+        let action_supported =
+            !(provider == BiosProvider::Lenovo && action == BiosPasswordAction::Create);
+        if !action_supported {
+            ui.colored_label(
+                Color32::from_rgb(230, 180, 100),
+                "Lenovo requires the first supervisor password to be created in UEFI setup. After that, this app can change or disable it.",
+            );
+        }
+        let fields_valid = match action {
+            BiosPasswordAction::Create => {
+                !self.new_password.is_empty() && self.new_password == self.confirm_password
+            }
+            BiosPasswordAction::Change => {
+                !self.current_password.is_empty()
+                    && !self.new_password.is_empty()
+                    && self.new_password == self.confirm_password
+            }
+            BiosPasswordAction::Disable => {
+                !self.current_password.is_empty() && self.confirm_disable_bios
+            }
+        } && !has_line_break
+            && !lenovo_delimiter;
+        let action_label = match action {
+            BiosPasswordAction::Create => "Enable BIOS password",
+            BiosPasswordAction::Change => "Change BIOS password",
+            BiosPasswordAction::Disable => "Disable BIOS password",
         };
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
-                    direct_supported && passwords_valid && self.result_rx.is_none(),
-                    egui::Button::new(action),
+                    provider_supported
+                        && action_supported
+                        && fields_valid
+                        && self.result_rx.is_none(),
+                    egui::Button::new(action_label),
                 )
                 .clicked()
             {
-                self.change_bios_password(provider);
+                self.apply_bios_password(provider, action);
             }
             if ui.button("Clear fields").clicked() {
                 self.clear_passwords();
             }
         });
-        if provider == BiosProvider::Lenovo && self.current_password.is_empty() {
-            ui.small("Lenovo requires the first supervisor password to be created inside UEFI setup; after that, this app can change it.");
+        ui.small("Administrator approval is required. Credentials are masked, DPAPI-protected while crossing the UAC boundary, deleted immediately afterward, never logged, and cleared when you leave this tab.");
+
+        if let Some(progress) = self.operation_progress {
+            ui.add_space(14.0);
+            ui.add(
+                egui::ProgressBar::new(progress)
+                    .show_percentage()
+                    .text(&self.operation_label),
+            );
         }
-        ui.small("The action requires administrator approval. Passwords are masked, DPAPI-protected while crossing the UAC boundary, deleted immediately afterward, never logged, and cleared when you leave this tab.");
+        ui.add_space(8.0);
+        ui.label(&self.status);
+
+        ui.add_space(12.0);
+        ui.collapsing("OEM adapter and compatibility", |ui| {
+            self.render_bios_adapter(ui, provider, adapter_present, adapter_status);
+        });
+
+        if !provider_supported {
+            ui.colored_label(
+                Color32::from_rgb(230, 180, 100),
+                "Direct desktop changes are not available for this model. Use the UEFI option below.",
+            );
+        }
 
         self.render_firmware_fallback(ui);
     }
@@ -338,7 +451,7 @@ impl DeviceApp {
         });
     }
 
-    fn change_bios_password(&mut self, provider: BiosProvider) {
+    fn apply_bios_password(&mut self, provider: BiosProvider, action: BiosPasswordAction) {
         if self.result_rx.is_some() {
             return;
         }
@@ -351,12 +464,14 @@ impl DeviceApp {
         };
         let current = Zeroizing::new(std::mem::take(&mut *self.current_password));
         let new = Zeroizing::new(std::mem::take(&mut *self.new_password));
-        self.confirm_password.clear();
+        use zeroize::Zeroize as _;
+        self.confirm_password.zeroize();
+        self.confirm_disable_bios = false;
         let identifier = Uuid::new_v4();
         let secret_path = std::env::temp_dir().join(format!("emi-bios-secrets-{identifier}.json"));
         let progress_path =
             std::env::temp_dir().join(format!("emi-bios-progress-{identifier}.txt"));
-        self.status = format!("Applying the {} BIOS password…", provider_name(provider));
+        self.status = format!("Applying {} BIOS password action…", provider_name(provider));
         self.operation_progress = Some(0.01);
         self.operation_label = "Protecting credentials".into();
         let (tx, rx) = mpsc::channel();
@@ -368,7 +483,11 @@ impl DeviceApp {
                 } else {
                     protect_secret(&current)?
                 };
-                let protected_new = protect_secret(&new)?;
+                let protected_new = if new.is_empty() {
+                    String::new()
+                } else {
+                    protect_secret(&new)?
+                };
                 let payload = serde_json::json!({
                     "current": protected_current,
                     "new": protected_new,
@@ -385,6 +504,7 @@ impl DeviceApp {
                     &script,
                     &[
                         ("-Provider", provider),
+                        ("-Mode", action.script_mode()),
                         ("-SecretPath", &secret),
                         ("-ProgressPath", &progress),
                     ],
@@ -394,10 +514,11 @@ impl DeviceApp {
             })();
             let _ = fs::remove_file(&secret_path);
             let message = result.map_or_else(
-                |error| format!("BIOS password was not changed: {error}"),
-                |()| {
-                    "BIOS password updated. Restart the PC before relying on the new credential."
-                        .into()
+                |error| format!("BIOS password action failed: {error}"),
+                |()| match action {
+                    BiosPasswordAction::Create => "BIOS password enabled. Restart the PC before relying on the new credential.".into(),
+                    BiosPasswordAction::Change => "BIOS password changed. Restart the PC before relying on the new credential.".into(),
+                    BiosPasswordAction::Disable => "BIOS password disabled. Restart the PC to confirm the firmware state.".into(),
                 },
             );
             let _ = tx.send(OperationEvent::Finished(message));

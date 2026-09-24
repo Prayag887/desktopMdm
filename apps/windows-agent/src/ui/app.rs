@@ -19,6 +19,23 @@ pub(crate) enum OperationEvent {
     Finished(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BiosPasswordAction {
+    Create,
+    Change,
+    Disable,
+}
+
+impl BiosPasswordAction {
+    pub(crate) const fn script_mode(self) -> &'static str {
+        match self {
+            Self::Create => "Create",
+            Self::Change => "Change",
+            Self::Disable => "Disable",
+        }
+    }
+}
+
 /// Trusted owner public key (Ed25519, hex). The matching SIGNING key stays
 /// offline with the owner and mints unlock tokens; only its holder can release a
 /// device. Replace this LAB key with your own from
@@ -46,6 +63,8 @@ pub(crate) struct DeviceApp {
     pub(crate) current_password: Zeroizing<String>,
     pub(crate) new_password: Zeroizing<String>,
     pub(crate) confirm_password: Zeroizing<String>,
+    pub(crate) bios_password_action: BiosPasswordAction,
+    pub(crate) confirm_disable_bios: bool,
     pub(crate) confirm_firmware_restart: bool,
     pub(crate) lan_ip: String,
     pub(crate) consent: bool,
@@ -89,6 +108,8 @@ impl DeviceApp {
             current_password: Zeroizing::new(String::new()),
             new_password: Zeroizing::new(String::new()),
             confirm_password: Zeroizing::new(String::new()),
+            bios_password_action: BiosPasswordAction::Create,
+            confirm_disable_bios: false,
             confirm_firmware_restart: false,
             lan_ip: local_ip_address::local_ip()
                 .map_or_else(|_| "127.0.0.1".into(), |ip| ip.to_string()),
@@ -119,6 +140,20 @@ impl DeviceApp {
         self.current_password.zeroize();
         self.new_password.zeroize();
         self.confirm_password.zeroize();
+        self.confirm_disable_bios = false;
+    }
+
+    fn render_operation_status(&self, ui: &mut egui::Ui) {
+        ui.add_space(12.0);
+        if let Some(progress) = self.operation_progress {
+            ui.add(
+                egui::ProgressBar::new(progress)
+                    .show_percentage()
+                    .text(&self.operation_label),
+            );
+            ui.add_space(8.0);
+        }
+        ui.label(&self.status);
     }
 }
 
@@ -212,16 +247,9 @@ impl eframe::App for DeviceApp {
                         }
                     });
                 }
-                ui.add_space(12.0);
-                if let Some(progress) = self.operation_progress {
-                    ui.add(
-                        egui::ProgressBar::new(progress)
-                            .show_percentage()
-                            .text(&self.operation_label),
-                    );
-                    ui.add_space(8.0);
+                if self.tab != 1 {
+                    self.render_operation_status(ui);
                 }
-                ui.label(&self.status);
                 ui.separator();
                 ui.small("Local-first Rust desktop app. QR dismissal uses a temporary one-time LAN link only during the simulation. An administrator can uninstall normally.");
             });
@@ -289,6 +317,18 @@ mod tests {
         app.current_password.push_str("test-only");
         app.clear_passwords();
         assert!(app.current_password.is_empty());
+        assert!(!app.confirm_disable_bios);
+        for action in [
+            BiosPasswordAction::Create,
+            BiosPasswordAction::Change,
+            BiosPasswordAction::Disable,
+        ] {
+            app.bios_password_action = action;
+            let output = context.run(egui::RawInput::default(), |context| {
+                egui::CentralPanel::default().show(context, |ui| app.render_firmware(ui));
+            });
+            assert!(!output.shapes.is_empty());
+        }
     }
 
     #[test]
