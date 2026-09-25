@@ -3,6 +3,7 @@
 use std::os::windows::process::CommandExt as _;
 use std::{fs, path::PathBuf, process::Command};
 
+use crate::agent_api::PersistedRemoteState;
 use emi_core::{BiosProvider, DeviceHealth};
 use uuid::Uuid;
 
@@ -52,6 +53,13 @@ pub(crate) fn read_health() -> Option<DeviceHealth> {
 
 pub(crate) fn read_device_id() -> Option<Uuid> {
     read_health().map(|health| health.device_id)
+}
+
+pub(crate) fn read_remote_state() -> Option<PersistedRemoteState> {
+    let base = std::env::var_os("PROGRAMDATA")?;
+    fs::read(PathBuf::from(base).join("EmiDeviceAgent/remote-state.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
 fn counter_path() -> Option<PathBuf> {

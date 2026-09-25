@@ -8,7 +8,7 @@ use emi_core::recovery::{parse_public_key_hex, verify_unlock, verify_unlock_word
 use zeroize::Zeroize as _;
 
 use super::app::{DeviceApp, OWNER_PUBLIC_KEY_HEX, UNLOCK_WORD_HASH};
-use super::system::{set_task_manager_disabled, write_last_counter};
+use super::system::{read_remote_state, set_task_manager_disabled, write_last_counter};
 use crate::bluescreen::BluescreenSession;
 
 impl DeviceApp {
@@ -101,7 +101,7 @@ impl DeviceApp {
         {
             self.end_blue_screen(context);
         }
-        self.bluescreen.is_some() || self.enforced || self.manual_lock
+        self.bluescreen.is_some() || self.enforced || self.manual_lock || self.remote_locked
     }
 
     /// Verify an owner-signed unlock token against the embedded public key.
@@ -153,6 +153,8 @@ impl DeviceApp {
     fn unlock_released(&mut self, context: &egui::Context, message: &str) {
         self.unlock_fail_count = 0;
         self.unlock_locked_until = None;
+        self.remote_unlock_override_at = read_remote_state().map(|state| state.checked_at);
+        self.remote_locked = false;
         self.end_blue_screen(context);
         self.status = message.into();
     }
@@ -201,6 +203,17 @@ impl DeviceApp {
         });
     }
 
+    fn render_remote_lock_reason(&self, ui: &mut egui::Ui) {
+        if !self.remote_lock_reason.is_empty() {
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(format!("Administrator note: {}", self.remote_lock_reason))
+                    .size(17.0)
+                    .color(Color32::from_rgb(205, 224, 244)),
+            );
+        }
+    }
+
     pub(crate) fn render_blue_screen(&mut self, context: &egui::Context) {
         // Branded payment-restriction screen — deliberately NOT a Windows BSOD:
         // no ":(", no fake stop code, no crash language. It states plainly that
@@ -223,6 +236,7 @@ impl DeviceApp {
                             .size(15.0)
                             .color(Color32::from_rgb(143, 198, 255)),
                     );
+                    self.render_remote_lock_reason(ui);
                     ui.add_space(12.0);
                     ui.label(
                         RichText::new("Payment required to continue")

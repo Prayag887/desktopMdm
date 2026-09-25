@@ -57,18 +57,28 @@ if (-not $SkipWingetBootstrap) {
 
 & $agent init
 if ($LASTEXITCODE -ne 0) { throw "Local device initialization failed (exit $LASTEXITCODE)" }
+& $agent enroll
+if ($LASTEXITCODE -ne 0) {
+  Write-Warning 'Enrollment is pending. Create a PENDING Device Agent for this BIOS serial in the admin panel; the service retries every five minutes.'
+}
 & $agent run --once
 if ($LASTEXITCODE -ne 0) { Write-Warning "Initial health snapshot failed (exit $LASTEXITCODE); continuing." }
 
 # Tamper hardening: SYSTEM/Administrators full, standard users read-only.
 icacls.exe $dataDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' /T | Out-Null
+# The bearer token is service-only. UI-safe enrollment metadata is separately
+# written to ui-config.json, so standard users never need config.json access.
+$privateConfig = Join-Path $dataDir 'config.json'
+if (Test-Path $privateConfig) {
+  icacls.exe $privateConfig /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
+}
 
 # --- Health service (optional) via New-Service -------------------------------
 # New-Service handles the spaced binary path that sc.exe rejects (exit 1639).
 # The lock does not need the service, so a failure here is non-fatal.
 try {
   New-Service -Name EmiDeviceAgent -BinaryPathName ('"' + $agent + '" service') -StartupType Automatic `
-    -DisplayName 'EMI Device Agent' -Description 'Standalone desktop companion and local device health' -ErrorAction Stop | Out-Null
+    -DisplayName 'EMI Device Agent' -Description 'EMI administrator control, lock-state synchronization, and device health' -ErrorAction Stop | Out-Null
   sc.exe failure EmiDeviceAgent reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
   Start-Service EmiDeviceAgent -ErrorAction SilentlyContinue
 }

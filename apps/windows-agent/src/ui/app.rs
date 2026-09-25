@@ -3,6 +3,7 @@
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
 use eframe::egui::{self, Color32, RichText};
 use emi_core::DeviceHealth;
 use uuid::Uuid;
@@ -10,7 +11,7 @@ use zeroize::Zeroizing;
 
 use super::system::{
     current_user_is_admin, launched_as_user_shell, read_device_id, read_health, read_last_counter,
-    service_is_running,
+    read_remote_state, service_is_running,
 };
 use crate::bluescreen::BluescreenSession;
 
@@ -66,7 +67,6 @@ pub(crate) struct DeviceApp {
     pub(crate) bios_password_action: BiosPasswordAction,
     pub(crate) confirm_disable_bios: bool,
     pub(crate) confirm_firmware_restart: bool,
-    pub(crate) lan_ip: String,
     pub(crate) consent: bool,
     pub(crate) bluescreen: Option<BluescreenSession>,
     pub(crate) qr: Option<egui::TextureHandle>,
@@ -75,12 +75,12 @@ pub(crate) struct DeviceApp {
     pub(crate) enforced: bool,
     pub(crate) lock_started: Option<Instant>,
     pub(crate) manual_lock: bool,
+    pub(crate) remote_locked: bool,
+    pub(crate) remote_lock_reason: String,
+    pub(crate) last_remote_refresh: Instant,
+    pub(crate) remote_unlock_override_at: Option<DateTime<Utc>>,
     pub(crate) device_id: Option<Uuid>,
     pub(crate) last_counter: u64,
-    pub(crate) lock_user: String,
-    pub(crate) opt_shell: bool,
-    pub(crate) opt_keyboard_filter: bool,
-    pub(crate) opt_applocker: bool,
     /// Manual override: block the keyboard even when no lock screen is showing.
     pub(crate) keyboard_disabled: bool,
     /// Consecutive failed unlock attempts, and a lockout deadline, to stop live
@@ -96,10 +96,21 @@ impl DeviceApp {
         // not an administrator. Admins and normal launches stay in the reversible
         // demo, keeping an Exit button.
         let enforced = !is_admin && launched_as_user_shell();
+        let remote_state = read_remote_state();
+        let remote_locked = remote_state
+            .as_ref()
+            .is_some_and(|state| state.lock_state.state.is_locked());
+        let remote_lock_reason = remote_state
+            .as_ref()
+            .map_or_else(String::new, |state| state.lock_state.reason.clone());
         Self {
             health: read_health(),
             service_running: service_is_running(),
-            status: "Standalone mode — no server or enrollment required".into(),
+            status: if remote_state.is_some() {
+                "Managed by the EMI administrator service".into()
+            } else {
+                "Waiting for device enrollment and first administrator check-in".into()
+            },
             result_rx: None,
             operation_progress: None,
             operation_label: String::new(),
@@ -111,8 +122,6 @@ impl DeviceApp {
             bios_password_action: BiosPasswordAction::Create,
             confirm_disable_bios: false,
             confirm_firmware_restart: false,
-            lan_ip: local_ip_address::local_ip()
-                .map_or_else(|_| "127.0.0.1".into(), |ip| ip.to_string()),
             consent: false,
             bluescreen: None,
             qr: None,
@@ -120,15 +129,13 @@ impl DeviceApp {
             recovery_focused: false,
             enforced,
             lock_started: None,
-            // Boot straight into the locked payment screen on every launch. The
-            // only way out is entering the unlock word on the on-screen keyboard.
-            manual_lock: true,
+            manual_lock: false,
+            remote_locked,
+            remote_lock_reason,
+            last_remote_refresh: Instant::now(),
+            remote_unlock_override_at: None,
             device_id: read_device_id(),
             last_counter: read_last_counter(),
-            lock_user: String::new(),
-            opt_shell: true,
-            opt_keyboard_filter: true,
-            opt_applocker: true,
             keyboard_disabled: false,
             unlock_fail_count: 0,
             unlock_locked_until: None,
@@ -155,10 +162,36 @@ impl DeviceApp {
         }
         ui.label(&self.status);
     }
+
+    fn sync_remote_lock_state(&mut self, context: &egui::Context) {
+        if self.last_remote_refresh.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        self.last_remote_refresh = Instant::now();
+        let Some(remote) = read_remote_state() else {
+            return;
+        };
+        let locked = remote.lock_state.state.is_locked();
+        self.remote_lock_reason = remote.lock_state.reason;
+        if locked && self.remote_unlock_override_at == Some(remote.checked_at) {
+            self.remote_locked = false;
+            return;
+        }
+        self.remote_unlock_override_at = None;
+        if self.remote_locked && !locked {
+            self.remote_locked = false;
+            self.end_blue_screen(context);
+            self.status = "The administrator released this device.".into();
+        } else if !self.remote_locked && locked {
+            self.remote_locked = true;
+            self.status = "The administrator restricted this device.".into();
+        }
+    }
 }
 
 impl eframe::App for DeviceApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        self.sync_remote_lock_state(context);
         let locked = self.blue_screen_active(context);
         // Drive the global keyboard hook: block the keyboard while a lock screen
         // is showing OR the manual "disable keyboard" toggle is on.
@@ -251,7 +284,7 @@ impl eframe::App for DeviceApp {
                     self.render_operation_status(ui);
                 }
                 ui.separator();
-                ui.small("Local-first Rust desktop app. QR dismissal uses a temporary one-time LAN link only during the simulation. An administrator can uninstall normally.");
+                ui.small("Managed Windows EMI agent. Lock state is synchronized by the service; an authorized administrator can uninstall normally.");
             });
         });
     }
@@ -287,9 +320,12 @@ mod tests {
     use crate::bluescreen::BluescreenSession;
 
     #[test]
-    fn standalone_app_loads_and_renders_without_enrollment() {
+    fn app_loads_and_renders_while_waiting_for_management() {
         let app = DeviceApp::load();
-        assert!(app.status.contains("Standalone"));
+        assert!(
+            app.status.contains("administrator") || app.status.contains("enrollment"),
+            "the UI should explain its management state"
+        );
         let context = egui::Context::default();
         let output = context.run(egui::RawInput::default(), |context| {
             egui::CentralPanel::default().show(context, |ui| app.render_health(ui));

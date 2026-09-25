@@ -5,10 +5,10 @@
 > reversible* design and separates a **lab-safe prototype** (in this repo) from
 > **production security recommendations** (documented, not implemented here).
 >
-> There is intentionally **no backend** in this proof of concept. Everything is
-> evaluated locally on the desktop. The signed-policy and recovery-code flows are
-> written so a backend can later become the signer without changing the client
-> trust model.
+> Lock state is controlled by the YajTech EMI admin API. The Windows service
+> enrolls once, checks in at boot/resume and every 60 seconds, validates pending
+> patch metadata/download integrity, persists the last confirmed state, and
+> acknowledges application back to the server.
 
 ## 1. Goals and non-goals
 
@@ -134,7 +134,7 @@ determined user can leave. Tell customers this before enrollment.
   events while the restriction screen is up, *except* while the recovery field
   has focus. It does **not** and **cannot** block OS-global Alt+Tab / Win — that
   is Keyboard Filter's job.
-- Reversible: Exit button, recovery code, QR dismissal, reboot, 5-min timeout.
+- Reversible: administrator `UNLOCK`/`RELEASE`, offline recovery token, or local administrator/WinRE recovery.
   Restart always begins unrestricted. Nothing is written to firmware or OS.
 
 **Production (recommended, NOT implemented here):**
@@ -197,9 +197,9 @@ Strengthening the base against Safe Mode / reimage (BitLocker + BIOS password +
 disabled USB/PXE boot) is the "disk/boot hardening" tier — documented, not
 scripted here, because it can brick a test VM and needs firmware access.
 
-## 10. How to unlock — owner runbook (no backend)
+## 10. How to unlock — owner runbook
 
-Three independent recovery paths. Any one releases a device; none needs a server.
+The normal release path is an administrator `UNLOCK` or `RELEASE` command. Offline owner tokens and local administrator/WinRE access remain emergency recovery paths when API connectivity is unavailable.
 
 ### A. Offline signed unlock token (the "only the owner can do it" path)
 

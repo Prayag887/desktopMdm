@@ -1,18 +1,16 @@
 #Requires -Version 5
 <#
 .SYNOPSIS
-  One-shot device provisioning: install the agent and apply the payment
-  restriction so the enrolled account boots into the lock on every login.
+  One-shot device provisioning for administrator-controlled EMI locking.
 
 .DESCRIPTION
   Meant to be launched by provision.cmd (which sets -ExecutionPolicy Bypass).
-  Self-elevates if not already admin. Under an RMM/MDM that runs as SYSTEM it is
-  already elevated and runs straight through. WinGet bootstrap is skipped by
-  default (it is only needed later for OEM firmware tooling) so a missing/failed
-  WinGet never blocks provisioning.
+  Self-elevates if not already admin. It installs and enrolls the agent; lock
+  state is then controlled exclusively by commands from the admin API.
 
 .PARAMETER EnrolledUser
-  The local standard account to lock (SAM name). Must not be an administrator.
+  Retained for command-line compatibility. The API-managed UI launches for all
+  users and does not apply a local lock during provisioning.
 
 .PARAMETER WithWinget
   Also bootstrap WinGet during install (off by default).
@@ -42,9 +40,4 @@ $installArgs = @{ InstallDir = $InstallDir }
 if (-not $WithWinget) { $installArgs['SkipWingetBootstrap'] = $true }
 & (Join-Path $here 'install.ps1') @installArgs
 
-& (Join-Path $here 'Set-PaymentRestriction.ps1') `
-  -EnrolledUser $EnrolledUser `
-  -AppPath (Join-Path $InstallDir 'emi-device-ui.exe') `
-  -LabVm
-
-Write-Host "Provisioned '$EnrolledUser'. That account boots into the lock on next login." -ForegroundColor Green
+Write-Host "Provisioned '$EnrolledUser'. Use the admin panel to issue LOCK or UNLOCK." -ForegroundColor Green

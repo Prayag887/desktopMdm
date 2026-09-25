@@ -1,5 +1,4 @@
-//! The non-locked tabs: overview/health, firmware prep, and restriction setup
-//! plus the manual lock controls that drive the provisioning scripts.
+//! The non-locked tabs: overview/health, firmware prep, and managed lock status.
 
 use std::fs;
 use std::io::Write as _;
@@ -12,15 +11,14 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32};
 use emi_core::BiosProvider;
-use qrcode::{Color, QrCode};
 use uuid::Uuid;
 use zeroize::{Zeroize as _, Zeroizing};
 
 use super::app::{BiosPasswordAction, DeviceApp, OperationEvent};
 use super::system::{
-    CREATE_NO_WINDOW, agent_path, bios_adapter_status, read_health, service_is_running,
+    CREATE_NO_WINDOW, agent_path, bios_adapter_status, read_health, read_remote_state,
+    service_is_running,
 };
-use crate::bluescreen::BluescreenSession;
 
 fn provider_name(provider: BiosProvider) -> &'static str {
     match provider {
@@ -539,221 +537,41 @@ impl DeviceApp {
         };
     }
 
-    pub(crate) fn render_bluescreen(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
-        ui.heading("Payment-restriction mode");
-        ui.label("Reversible branded lock demo — Windows keeps running normally.");
+    pub(crate) fn render_bluescreen(&mut self, ui: &mut egui::Ui, _context: &egui::Context) {
+        ui.heading("Administrator-controlled EMI access");
+        ui.label("Lock and release decisions come from the EMI admin API.");
         ui.add_space(16.0);
-        ui.label("PC's private LAN IPv4 address");
-        ui.text_edit_singleline(&mut self.lan_ip);
-        ui.small("Phone and PC must share a trusted network. Windows Firewall may require approval for this app on a Private network. No firewall rules are changed automatically. 127.0.0.1 works only on this PC.");
-        ui.add_space(16.0);
-        ui.checkbox(
-            &mut self.consent,
-            "I am authorized to run this reversible restriction demo on this PC",
-        );
-        let mut enabled = false;
-        if ui
-            .add_enabled(
-                self.consent,
-                egui::Checkbox::new(&mut enabled, "Show payment-restriction screen"),
-            )
-            .changed()
-            && enabled
-        {
-            match self
-                .lan_ip
-                .parse()
-                .map_err(|_| "Enter a valid IPv4 address".to_string())
-                .and_then(|ip| BluescreenSession::start(ip).map_err(|error| error.to_string()))
-            {
-                Ok(session) => {
-                    // The payment screen's QR encodes this fixed link.
-                    let rick_roll = "https://www.youtube.com/watch?v=Aq5WXmQQooo";
-                    match QrCode::new(rick_roll) {
-                        Ok(code) => {
-                            let width = code.width();
-                            let side = width + 8;
-                            let mut image = egui::ColorImage::new([side, side], Color32::WHITE);
-                            for y in 0..width {
-                                for x in 0..width {
-                                    if code[(x, y)] == Color::Dark {
-                                        image[(x + 4, y + 4)] = Color32::BLACK;
-                                    }
-                                }
-                            }
-                            self.qr = Some(context.load_texture(
-                                "dismiss-qr",
-                                image,
-                                egui::TextureOptions::NEAREST,
-                            ));
-                            self.bluescreen = Some(session);
-                            context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
-                        }
-                        Err(error) => self.status = format!("QR generation failed: {error}"),
-                    }
-                }
-                Err(error) => self.status = format!("Simulation could not start: {error}"),
-            }
-        }
-        ui.add_space(12.0);
-        ui.label("There is no Exit button while locked. The only way out is typing the unlock word on the on-screen keyboard. A restart just re-locks on boot.");
-        ui.small("This does not crash Windows, block OS recovery keys, change BIOS settings, or install a driver. The recovery field stays typable.");
-
-        ui.add_space(20.0);
-        ui.separator();
-        self.render_manual_lock(ui);
-    }
-
-    /// Administrator controls to pick and apply lock methods by hand.
-    fn render_manual_lock(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Manual lock controls");
-        ui.small(
-            "Session lock has no Exit button: it clears only when the unlock word is typed on \
-             the on-screen keyboard. OS lockdown runs the provisioning script elevated and \
-             needs an administrator plus Enterprise/IoT for the keyboard-filter and AppLocker \
-             layers. Test on a VM only.",
-        );
-        ui.add_space(10.0);
-
-        // Manual keyboard kill switch, independent of the lock screen. Toggle it
-        // back off with the mouse (the checkbox is a pointer control).
-        let mut disabled = self.keyboard_disabled;
-        if ui
-            .checkbox(&mut disabled, "Disable keyboard now (block every key)")
-            .changed()
-        {
-            self.keyboard_disabled = disabled;
-            self.status = if disabled {
-                "Keyboard disabled. Uncheck (mouse) to re-enable.".into()
+        let service_color = if self.service_running {
+            Color32::from_rgb(30, 150, 85)
+        } else {
+            Color32::LIGHT_RED
+        };
+        ui.colored_label(
+            service_color,
+            if self.service_running {
+                "Device service is running"
             } else {
-                "Keyboard enabled.".into()
-            };
-        }
+                "Device service is not running"
+            },
+        );
         ui.add_space(10.0);
-
-        if ui.button("Lock this session now").clicked() {
-            self.manual_lock = true;
-            self.status = "Locked. Type the unlock word on the on-screen keyboard to leave.".into();
-        }
-
-        ui.add_space(14.0);
-        ui.label("OS lockdown target (enrolled standard account):");
-        ui.text_edit_singleline(&mut self.lock_user);
-        ui.checkbox(
-            &mut self.opt_shell,
-            "Replace shell (app becomes the desktop)",
-        );
-        ui.checkbox(
-            &mut self.opt_keyboard_filter,
-            "Keyboard Filter — block Alt+Tab / Win / Ctrl+Shift+Esc (Enterprise/IoT)",
-        );
-        ui.checkbox(
-            &mut self.opt_applocker,
-            "AppLocker — only the signed app may run (Enterprise/IoT)",
-        );
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            let ready = self.result_rx.is_none() && !self.lock_user.trim().is_empty();
-            if ui
-                .add_enabled(ready, egui::Button::new("Apply OS lockdown (admin)"))
-                .clicked()
-            {
-                self.run_lockdown(true);
-            }
-            if ui
-                .add_enabled(
-                    self.result_rx.is_none(),
-                    egui::Button::new("Remove OS lockdown (admin)"),
-                )
-                .clicked()
-            {
-                self.run_lockdown(false);
-            }
-        });
-        ui.small(
-            "Task Manager and Fast User Switching are always part of the base lockdown. \
-             Administrators and WinRE are never restricted.",
-        );
-    }
-
-    /// Launch the elevated provisioning/teardown script with the chosen options.
-    /// Non-selected layers are skipped. Reversible via the same UI.
-    fn run_lockdown(&mut self, apply: bool) {
-        if self.result_rx.is_some() {
-            return;
-        }
-        let script = if apply {
-            "Set-PaymentRestriction.ps1"
+        if let Some(remote) = read_remote_state() {
+            ui.label(format!(
+                "Current server state: {:?}",
+                remote.lock_state.state
+            ));
+            ui.label(format!("Reason: {}", remote.lock_state.reason));
+            ui.label(format!("Last successful check-in: {}", remote.checked_at));
+            ui.small(format!("Managed device ID: {}", remote.device_uuid));
         } else {
-            "Remove-PaymentRestriction.ps1"
-        };
-        let script_path = match std::env::current_exe() {
-            Ok(exe) => exe.with_file_name(script),
-            Err(error) => {
-                self.status = format!("Cannot locate script: {error}");
-                return;
-            }
-        };
-        if !script_path.exists() {
-            self.status = format!("{script} not found beside the app.");
-            return;
-        }
-        // Build the PowerShell ArgumentList as discrete single-quoted items so
-        // values containing spaces stay intact. Escape embedded quotes.
-        let quote = |value: &str| format!("'{}'", value.replace('\'', "''"));
-        let mut arg_items: Vec<String> = vec![
-            quote("-NoProfile"),
-            quote("-ExecutionPolicy"),
-            quote("Bypass"),
-            quote("-File"),
-            quote(&script_path.to_string_lossy()),
-        ];
-        if apply {
-            let exe = std::env::current_exe()
-                .map(|exe| exe.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            arg_items.push(quote("-EnrolledUser"));
-            arg_items.push(quote(self.lock_user.trim()));
-            arg_items.push(quote("-AppPath"));
-            arg_items.push(quote(&exe));
-            arg_items.push(quote("-LabVm"));
-            if !self.opt_shell {
-                arg_items.push(quote("-SkipShell"));
-            }
-            if !self.opt_keyboard_filter {
-                arg_items.push(quote("-SkipKeyboardFilter"));
-            }
-            if !self.opt_applocker {
-                arg_items.push(quote("-SkipAppLocker"));
-            }
-        } else {
-            arg_items.push(quote("-LabVm"));
-        }
-        let argument_list = arg_items.join(",");
-
-        self.status = format!("Running {script} (elevated)…");
-        let (tx, rx) = mpsc::channel();
-        self.result_rx = Some(rx);
-        thread::spawn(move || {
-            let inner = format!(
-                "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath 'powershell.exe' -ArgumentList {argument_list} -Verb RunAs -PassThru -Wait; exit $p.ExitCode",
+            ui.colored_label(
+                Color32::from_rgb(230, 180, 100),
+                "Waiting for enrollment and the first successful check-in.",
             );
-            let result = Command::new("powershell.exe")
-                .args(["-NoProfile", "-NonInteractive", "-Command", &inner])
-                .creation_flags(CREATE_NO_WINDOW)
-                .status()
-                .map_or_else(
-                    |error| format!("Lockdown command failed: {error}"),
-                    |status| {
-                        if status.success() {
-                            "OS lockdown command completed.".into()
-                        } else {
-                            format!("Lockdown canceled or failed: {status}")
-                        }
-                    },
-                );
-            let _ = tx.send(OperationEvent::Finished(result));
-        });
+        }
+        ui.add_space(16.0);
+        ui.label("There are no local lock or unlock controls. Use the admin panel to issue LOCK, UNLOCK, WARN, or RELEASE commands.");
+        ui.small("The Windows service checks immediately after startup or resume and every 60 seconds while online. If the API is temporarily unavailable, the last confirmed state is retained.");
     }
 
     pub(crate) fn refresh_health(&mut self) {

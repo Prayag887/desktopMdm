@@ -1,17 +1,18 @@
-# desktopMdm — desktop only
+# desktopMdm — managed Windows EMI agent
 
-A lightweight, standalone Windows desktop app written in Rust with a native egui/eframe GUI. No admin website, hosted backend, Docker deployment, enrollment or socket client remains.
+A Windows device agent written in Rust with a native egui/eframe GUI. It enrolls against the YajTech EMI admin API and applies administrator-issued lock state on the managed PC.
 
 ## What remains
 
 - Native desktop window: local device identity, operating system, storage, battery, Secure Boot status, and manufacturer detection.
 - BIOS administrator-password workflow with masked current/new/confirmation fields, OEM adapter download progress, manufacturer/model detection, and elevated set/change actions for supported Dell, HP, Lenovo, and ASUS firmware interfaces. Acer and every other UEFI laptop can be restarted directly into firmware settings from the same screen.
-- Permission-gated fullscreen blue-screen **simulation**, with a QR dismissal page served temporarily by the desktop app on one private LAN interface. No actual crash or OS lockout.
-- Optional Windows companion service: refreshes a local health snapshot every five minutes and after resume.
+- Administrator-controlled payment restriction screen driven by the documented Device Agent API.
+- Automatic enrollment retry, immediate boot/resume check-in, 60-second heartbeats, pending-command fetch, patch checksum validation, and success/failure acknowledgement.
+- Windows companion service that persists the last confirmed remote state so a restart or temporary outage cannot silently change the administrator's decision.
 - Local device/EMI domain types for future desktop workflows.
 - Administrator installer/uninstaller and Windows builds in GitHub Actions.
 
-This is the desktop-only foundation, not a complete EMI administration product. Payment editing, reminder scheduling, Windows account password changes, and remote device control are not implemented in this version. BIOS password management is local-only, requires UAC approval, and is enabled only when the detected model exposes a documented OEM interface. The app is normally uninstallable by an authorized administrator.
+Payment and customer administration remain in the hosted admin product. BIOS password management is local-only, requires UAC approval, and is enabled only when the detected model exposes a documented OEM interface. The app remains uninstallable by an authorized administrator.
 
 ## BIOS passwords
 
@@ -19,17 +20,17 @@ Open **BIOS passwords** to install the detected OEM adapter and watch its staged
 
 Firmware support is model-specific even within one brand. The app verifies that the vendor tool or interface exists and reports the OEM error instead of trying an unrecognized generic command. Forgotten passwords cannot be recovered by this app.
 
-## Blue screen mode
+## Administrator-controlled locking
 
-Open Blue screen mode, verify the PC's private IPv4 address, acknowledge permission, and check Show simulated blue screen. The blue screen displays a QR code. On a phone on the same trusted network, scan it and tap Dismiss simulated blue screen. Merely scanning/opening the link does not dismiss it.
+Before installation, create the device in the admin system using the laptop's BIOS serial number, then create its **PENDING Device Agent**. The installer calls `/api/agent/enroll/`; the Windows service retries enrollment every five minutes if the pending record is not ready yet.
 
-Escape does not dismiss Blue screen mode. The explicit Exit button, closing the app, rebooting, or the five-minute safety timeout ends the simulation. OS recovery keys and switching applications remain available. The simulation is memory-only: restarting always starts unchecked, and it never alters firmware or Windows settings.
+Once enrolled, the service calls `/api/agent/check-in/` immediately on service startup and resume, and every 60 seconds. Pending commands are fetched from `/api/agent/patch-files/current/`, validated against command metadata, expiry, size, and SHA-256 checksum, persisted locally, and acknowledged only after application. `LOCK` restricts the UI; `UNLOCK`, `WARN`, and `RELEASE` remove the restriction. Remote `UNINSTALL` is deliberately refused and reported as failed because removal requires a local administrator.
 
-Windows Firewall may ask for Private-network access; the app does not change firewall rules itself. Guest-network isolation/VPNs may prevent phone access. The loopback fallback `127.0.0.1` works only on the PC. The single-use QR link grants dismissal only, uses plain HTTP on the LAN, expires with the session, and should not be shared outside the trusted network. No separate server deployment is required.
+There are no local lock/unlock buttons. The status page shows the server state, reason, managed device UUID, and last successful check-in. If the network is unavailable during boot, the last confirmed state remains active until the service reconnects.
 
 ## Windows setup
 
-Download the current desktop-only Windows release, extract it, and open **emi-device-ui.exe** for the native window. The window opens without enrollment or a configured server. Health is shown after the local companion has initialized this PC.
+Download the Windows release and extract it. In the admin panel, create the pending device agent for the laptop's BIOS serial before installation.
 
 For installation, open PowerShell as administrator in the extracted folder:
 
@@ -37,7 +38,7 @@ For installation, open PowerShell as administrator in the extracted folder:
 .\\install.ps1
 ```
 
-The installer copies both binaries, initializes a local identity, collects health, installs the auto-start companion service, creates the desktop app startup shortcut, and opens the window. No username, password, server URL, or enrollment key is required.
+The installer copies both binaries, reads the BIOS serial, enrolls with `https://emi-api.yajtech.com`, collects health, installs the automatic service, creates the UI startup shortcut, and opens the window. Enrollment uses the one-time pending-agent workflow documented by the API; no admin username or password is stored on the PC.
 
 WinGet bootstrap downloads Microsoft Desktop App Installer only when WinGet is missing. For an offline install or when bootstrap is unwanted:
 
@@ -51,12 +52,14 @@ To uninstall, run `.\\uninstall.ps1` as administrator. Local data is retained fo
 
 State lives in `%PROGRAMDATA%\\EmiDeviceAgent`:
 
-- `config.json` / `ui-config.json`: local UUID only.
-- `health.json`: local health snapshot, including manufacturer/model, never uploaded.
+- `config.json`: service-only API URL, bearer token, and local/remote device IDs. Its ACL permits only SYSTEM and Administrators.
+- `ui-config.json`: non-secret enrollment metadata for the desktop UI.
+- `remote-state.json`: last successfully confirmed server lock state and check-in time.
+- `health.json`: local health snapshot, including manufacturer/model.
 
-When the updated companion initializes an existing installation, it reuses the old device UUID and rewrites configuration without the old server/token fields. Other historical device data is not deleted. Corrupt configuration returns an error instead of silently replacing an identity.
+When the companion initializes an existing installation, it reuses the old local device UUID. Incomplete legacy credentials are discarded; a complete current enrollment is retained. Other historical device data is not deleted. Corrupt configuration returns an error instead of silently replacing an identity.
 
-The previous local Docker container/network was removed without deleting the database volume. Server source is recoverable from Git history. Historical server-based releases remain available; use version 0.5.0 or later for the desktop-only architecture. An ignored old `.env`, if present, is unused by this app.
+The desktop agent does not run a local Docker backend. An ignored old `.env`, if present, is unused by this app.
 
 ## Development
 

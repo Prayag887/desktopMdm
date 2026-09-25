@@ -2,6 +2,9 @@ use anyhow::{Context, bail};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use emi_core::{BiosProvider, DeviceHealth};
+use emi_device_agent::agent_api::{
+    AgentApi, CommandAction, DEFAULT_API_BASE, LockState, LockStateKind, PersistedRemoteState,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -17,7 +20,7 @@ use tracing::info;
 use uuid::Uuid;
 
 #[derive(Parser)]
-#[command(version, about = "Standalone Windows desktop health companion")]
+#[command(version, about = "Windows EMI device agent")]
 struct Cli {
     #[command(subcommand)]
     command: AgentCommand,
@@ -25,8 +28,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum AgentCommand {
-    /// Initialize this PC locally; no server or account is required.
+    /// Initialize this PC's local identity and state directory.
     Init,
+    /// Enroll this PC after an administrator creates its pending device agent.
+    Enroll {
+        #[arg(long, default_value = DEFAULT_API_BASE)]
+        server: String,
+    },
     /// Refresh the local health snapshot.
     Run {
         #[arg(long)]
@@ -46,6 +54,12 @@ static RESUME_REQUESTED: AtomicBool = AtomicBool::new(false);
 #[derive(Debug, Serialize, Deserialize)]
 struct AgentConfig {
     device_id: Uuid,
+    #[serde(default = "default_api_base")]
+    api_base: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    remote_device_id: Option<Uuid>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -57,10 +71,20 @@ fn main() -> anyhow::Result<()> {
             initialize()?;
             Ok(())
         }
-        AgentCommand::Run { once } => run(once),
+        AgentCommand::Enroll { server } => enroll(&server),
+        AgentCommand::Run { once } => run(once, false),
         AgentCommand::Bootstrap => bootstrap(),
         AgentCommand::Status => {
-            println!("local device {}", initialize()?.device_id);
+            let config = initialize()?;
+            println!(
+                "local device {} ({})",
+                config.device_id,
+                if config.agent_token.is_some() {
+                    "enrolled"
+                } else {
+                    "not enrolled"
+                }
+            );
             Ok(())
         }
         AgentCommand::Service => service_entry(),
@@ -69,45 +93,219 @@ fn main() -> anyhow::Result<()> {
 
 fn initialize() -> anyhow::Result<AgentConfig> {
     let path = data_dir()?.join("config.json");
-    let config = match fs::read(&path) {
+    let mut config = match fs::read(&path) {
         Ok(bytes) => {
             serde_json::from_slice::<AgentConfig>(&bytes).context("parse local device config")?
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => AgentConfig {
             device_id: Uuid::new_v4(),
+            api_base: default_api_base(),
+            agent_token: None,
+            remote_device_id: None,
         },
         Err(error) => return Err(error).context("read local device config"),
     };
-    // A legacy config's extra server/token fields are deliberately not retained.
-    fs::write(&path, serde_json::to_vec_pretty(&config)?)?;
-    fs::write(
-        data_dir()?.join("ui-config.json"),
-        serde_json::to_vec_pretty(&config)?,
+    // A token without its server-issued device UUID (or vice versa) is an
+    // incomplete/legacy enrollment and must not be treated as authenticated.
+    if config.agent_token.is_some() != config.remote_device_id.is_some() {
+        config.agent_token = None;
+        config.remote_device_id = None;
+    }
+    write_json_safely(&path, &config)?;
+    write_json_safely(
+        &data_dir()?.join("ui-config.json"),
+        &serde_json::json!({
+            "device_id": config.device_id,
+            "remote_device_id": config.remote_device_id,
+            "enrolled": config.agent_token.is_some(),
+            "api_base": config.api_base,
+        }),
     )?;
     Ok(config)
 }
 
-fn run(once: bool) -> anyhow::Result<()> {
-    let config = initialize()?;
+fn default_api_base() -> String {
+    DEFAULT_API_BASE.to_string()
+}
+
+fn enroll(server: &str) -> anyhow::Result<()> {
+    let mut config = initialize()?;
+    if config.agent_token.is_some() {
+        info!(device_id=%config.device_id, "device is already enrolled");
+        return Ok(());
+    }
+    enroll_config(&mut config, server)?;
+    Ok(())
+}
+
+fn enroll_config(config: &mut AgentConfig, server: &str) -> anyhow::Result<()> {
+    let serial = hardware_serial_number()?;
+    let enrollment = AgentApi::new(server)?
+        .enroll(&serial, env!("CARGO_PKG_VERSION"))
+        .with_context(|| {
+            format!(
+                "enroll BIOS serial {serial}; first create its PENDING Device Agent in the admin panel"
+            )
+        })?;
+    config.api_base = server.trim_end_matches('/').to_string();
+    config.agent_token = Some(enrollment.token);
+    config.remote_device_id = Some(enrollment.device_uuid);
+    write_json_safely(&data_dir()?.join("config.json"), &config)?;
+    write_json_safely(
+        &data_dir()?.join("ui-config.json"),
+        &serde_json::json!({
+            "device_id": config.device_id,
+            "remote_device_id": config.remote_device_id,
+            "enrolled": true,
+            "api_base": config.api_base,
+        }),
+    )?;
+    info!(serial, device_uuid=%enrollment.device_uuid, "device enrolled with EMI admin API");
+    Ok(())
+}
+
+fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
+    let mut config = initialize()?;
     let mut next_health = Instant::now();
+    let mut next_check_in = Instant::now();
+    let mut next_enrollment = Instant::now();
+    let mut api = config
+        .agent_token
+        .as_ref()
+        .map(|_| AgentApi::new(&config.api_base))
+        .transpose()?;
     loop {
         if STOP_REQUESTED.load(Ordering::Relaxed) {
             return Ok(());
         }
-        if Instant::now() >= next_health || RESUME_REQUESTED.swap(false, Ordering::Relaxed) {
+        let resumed = RESUME_REQUESTED.swap(false, Ordering::Relaxed);
+        if auto_enroll
+            && config.agent_token.is_none()
+            && (Instant::now() >= next_enrollment || resumed)
+        {
+            let server = config.api_base.clone();
+            match enroll_config(&mut config, &server) {
+                Ok(()) => api = Some(AgentApi::new(&config.api_base)?),
+                Err(error) => tracing::warn!(%error, "device enrollment is still pending"),
+            }
+            next_enrollment = Instant::now() + Duration::from_secs(300);
+        }
+        if Instant::now() >= next_health || resumed {
             let health = collect_health(config.device_id);
             let directory = data_dir()?;
             let temporary = directory.join("health.json.tmp");
             fs::write(&temporary, serde_json::to_vec_pretty(&health)?)?;
             fs::rename(temporary, directory.join("health.json"))?;
             info!(device_id=%config.device_id, "local health snapshot refreshed");
-            if once {
-                return Ok(());
-            }
             next_health = Instant::now() + Duration::from_secs(300);
+        }
+        if (Instant::now() >= next_check_in || resumed)
+            && let (Some(api), Some(token), Some(device_uuid)) = (
+                api.as_ref(),
+                config.agent_token.as_deref(),
+                config.remote_device_id,
+            )
+        {
+            if let Err(error) = synchronize_remote_state(api, token, device_uuid) {
+                tracing::warn!(%error, "EMI admin synchronization failed; retaining last applied state");
+            }
+            next_check_in = Instant::now() + Duration::from_secs(60);
+        }
+        if once {
+            return Ok(());
         }
         std::thread::sleep(Duration::from_secs(1));
     }
+}
+
+fn synchronize_remote_state(api: &AgentApi, token: &str, device_uuid: Uuid) -> anyhow::Result<()> {
+    let check_in = api.check_in(token, env!("CARGO_PKG_VERSION"))?;
+    let Some(command) = check_in.pending_command else {
+        return persist_remote_state(&PersistedRemoteState {
+            device_uuid,
+            lock_state: check_in.lock_state,
+            checked_at: Utc::now(),
+            server_time: check_in.server_time,
+        });
+    };
+    let mut patch_uuid = None;
+    let result = (|| -> anyhow::Result<()> {
+        if command.expires_at <= check_in.server_time {
+            bail!("pending command is expired");
+        }
+        if command.nonce.trim().is_empty() {
+            bail!("pending command has no nonce");
+        }
+        let patch = api
+            .current_patch(token)?
+            .context("server reported a pending command but returned no patch")?;
+        patch_uuid = Some(patch.uuid);
+        if patch.lock_command_uuid != command.uuid || patch.action != command.action {
+            bail!("patch metadata does not match the pending command");
+        }
+        if patch.expires_at <= check_in.server_time {
+            bail!("command patch is expired");
+        }
+        if patch.version == 0 || patch.signed_payload.trim().is_empty() || patch.signing_key_id == 0
+        {
+            bail!("command patch is missing signing metadata");
+        }
+        api.verify_patch_download(token, &patch)?;
+        let state = command_target_state(command.action)?;
+        persist_remote_state(&PersistedRemoteState {
+            device_uuid,
+            lock_state: LockState {
+                state,
+                reason: command.reason.clone(),
+                changed_at: check_in.server_time,
+            },
+            checked_at: Utc::now(),
+            server_time: check_in.server_time,
+        })
+    })();
+    match result {
+        Ok(()) => api.acknowledge(
+            token,
+            patch_uuid.context("validated patch has no identifier")?,
+            true,
+            None,
+        ),
+        Err(error) => {
+            let reason = error.to_string();
+            if let Some(patch_uuid) = patch_uuid {
+                let _ = api.acknowledge(token, patch_uuid, false, Some(&reason));
+            }
+            Err(error)
+        }
+    }
+}
+
+fn command_target_state(action: CommandAction) -> anyhow::Result<LockStateKind> {
+    match action {
+        CommandAction::Lock => Ok(LockStateKind::Locked),
+        CommandAction::Unlock => Ok(LockStateKind::Unlocked),
+        CommandAction::Warn => Ok(LockStateKind::Warning),
+        CommandAction::Release => Ok(LockStateKind::PermanentlyReleased),
+        CommandAction::Uninstall => {
+            bail!("remote uninstall is not enabled; an administrator must uninstall locally")
+        }
+    }
+}
+
+fn persist_remote_state(state: &PersistedRemoteState) -> anyhow::Result<()> {
+    write_json_safely(&data_dir()?.join("remote-state.json"), &state)
+}
+
+fn write_json_safely(path: &std::path::Path, value: &impl Serialize) -> anyhow::Result<()> {
+    let temporary = path.with_extension("json.tmp");
+    fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
+    // `rename` replaces an existing file on Unix but not on Windows. The UI
+    // retains its in-memory state during this tiny replacement window.
+    if cfg!(windows) && path.exists() {
+        fs::remove_file(path)?;
+    }
+    fs::rename(temporary, path)?;
+    Ok(())
 }
 
 fn collect_health(device_id: Uuid) -> DeviceHealth {
@@ -200,7 +398,7 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
     if handle.set_service_status(running).is_err() {
         return;
     }
-    let exit_code = match run(false) {
+    let exit_code = match run(false, true) {
         Ok(()) => 0,
         Err(error) => {
             error!(%error, "service stopped with an error");
@@ -221,6 +419,37 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
 fn hostname() -> String {
     System::host_name().unwrap_or_else(|| "unknown-device".into())
 }
+
+fn hardware_serial_number() -> anyhow::Result<String> {
+    #[cfg(windows)]
+    {
+        let output = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-CimInstance Win32_BIOS).SerialNumber",
+            ])
+            .output()
+            .context("read BIOS serial number")?;
+        if !output.status.success() {
+            bail!("Windows could not read the BIOS serial number");
+        }
+        let serial = String::from_utf8(output.stdout)
+            .context("BIOS serial number is not valid UTF-8")?
+            .trim()
+            .to_string();
+        if serial.is_empty() || serial.eq_ignore_ascii_case("To Be Filled By O.E.M.") {
+            bail!("this PC does not report a usable BIOS serial number");
+        }
+        Ok(serial)
+    }
+    #[cfg(not(windows))]
+    {
+        bail!("device enrollment is only supported on Windows")
+    }
+}
+
 fn executable_available(name: &str) -> bool {
     Command::new(name)
         .arg("--version")
@@ -365,10 +594,27 @@ mod tests {
         );
     }
     #[test]
-    fn local_config_does_not_retain_legacy_server_credentials() {
-        let config: AgentConfig = serde_json::from_str(r#"{"device_id":"6fa459ea-ee8a-3ca4-894e-db77e160355e","server":"https://old.invalid","agent_token":"legacy"}"#).unwrap();
+    fn local_config_uses_the_documented_agent_auth_fields() {
+        let config: AgentConfig = serde_json::from_str(r#"{"device_id":"6fa459ea-ee8a-3ca4-894e-db77e160355e","api_base":"https://emi-api.yajtech.com","agent_token":"1|secret","remote_device_id":"7fa459ea-ee8a-3ca4-894e-db77e160355e","server":"https://old.invalid"}"#).unwrap();
         let encoded = serde_json::to_value(config).unwrap();
         assert!(encoded.get("server").is_none());
-        assert!(encoded.get("agent_token").is_none());
+        assert_eq!(encoded["agent_token"], "1|secret");
+        assert_eq!(
+            encoded["remote_device_id"],
+            "7fa459ea-ee8a-3ca4-894e-db77e160355e"
+        );
+    }
+
+    #[test]
+    fn admin_commands_map_to_safe_local_states() {
+        assert_eq!(
+            command_target_state(CommandAction::Lock).unwrap(),
+            LockStateKind::Locked
+        );
+        assert_eq!(
+            command_target_state(CommandAction::Release).unwrap(),
+            LockStateKind::PermanentlyReleased
+        );
+        assert!(command_target_state(CommandAction::Uninstall).is_err());
     }
 }
