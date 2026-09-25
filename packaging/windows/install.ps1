@@ -56,7 +56,9 @@ if (-not $SkipWingetBootstrap) {
 }
 
 & $agent init
-if ($LASTEXITCODE -ne 0) { throw "Local device initialization failed (exit $LASTEXITCODE)" }
+if ($LASTEXITCODE -ne 0) {
+  throw "Local device initialization failed (exit $LASTEXITCODE). Check permissions on '$dataDir' and run '$agent init' from an elevated terminal for the detailed error."
+}
 & $agent enroll
 if ($LASTEXITCODE -ne 0) {
   Write-Warning 'Enrollment is pending. Create a PENDING Device Agent for this BIOS serial in the admin panel; the service retries every five minutes.'
@@ -73,16 +75,21 @@ if (Test-Path $privateConfig) {
   icacls.exe $privateConfig /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
 }
 
-# --- Health service (optional) via New-Service -------------------------------
+# --- Automatic boot service --------------------------------------------------
 # New-Service handles the spaced binary path that sc.exe rejects (exit 1639).
-# The lock does not need the service, so a failure here is non-fatal.
+# This service is authoritative: it starts during boot, enrolls if necessary,
+# checks in immediately when enrolled, and continues checking every 60 seconds.
 try {
   New-Service -Name EmiDeviceAgent -BinaryPathName ('"' + $agent + '" service') -StartupType Automatic `
     -DisplayName 'EMI Device Agent' -Description 'EMI administrator control, lock-state synchronization, and device health' -ErrorAction Stop | Out-Null
   sc.exe failure EmiDeviceAgent reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
-  Start-Service EmiDeviceAgent -ErrorAction SilentlyContinue
+  sc.exe failureflag EmiDeviceAgent 1 | Out-Null
+  Start-Service EmiDeviceAgent -ErrorAction Stop
+  $service = Get-Service EmiDeviceAgent -ErrorAction Stop
+  $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(20))
+  if ($service.Status -ne 'Running') { throw "service state is $($service.Status)" }
 }
-catch { Write-Warning "Health service setup skipped: $_" }
+catch { throw "Automatic EMI service installation failed: $_" }
 
 # --- Auto-start for EVERY account at login -----------------------------------
 $uiPath = Join-Path $InstallDir 'emi-device-ui.exe'
@@ -101,7 +108,7 @@ $shortcut.Save()
 $lockAction = New-ScheduledTaskAction -Execute $uiPath
 $lockTrigger = New-ScheduledTaskTrigger -AtLogOn
 $lockPrincipal = New-ScheduledTaskPrincipal -GroupId 'S-1-1-0'
-$lockSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$lockSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 Register-ScheduledTask -TaskName 'EmiDeviceLockAll' -Action $lockAction -Trigger $lockTrigger -Principal $lockPrincipal -Settings $lockSettings -Force | Out-Null
 
 Start-Process $uiPath

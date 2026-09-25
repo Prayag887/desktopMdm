@@ -85,7 +85,7 @@ fn legacy_initialization_keeps_identity_and_historical_data_but_removes_credenti
 }
 
 #[test]
-fn corrupt_configuration_is_reported_and_not_overwritten() {
+fn corrupt_configuration_is_preserved_and_reinitialized() {
     let home = tempfile::tempdir().unwrap();
     let directory = home.path().join("EmiDeviceAgent");
     fs::create_dir(&directory).unwrap();
@@ -99,7 +99,17 @@ fn corrupt_configuration_is_reported_and_not_overwritten() {
         .args(["run", "--once"])
         .output()
         .unwrap();
-    assert!(!output.status.success());
-    assert_eq!(fs::read_to_string(path).unwrap(), "corrupt");
-    assert!(!directory.join("health.json").exists());
+    assert!(
+        output.status.success(),
+        "recovery failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(directory.join("config.invalid.json")).unwrap(),
+        "corrupt"
+    );
+    let config: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert!(config["device_id"].as_str().is_some());
+    assert_eq!(config["api_base"], "https://emi-api.yajtech.com");
+    assert!(directory.join("health.json").exists());
 }

@@ -94,9 +94,23 @@ fn main() -> anyhow::Result<()> {
 fn initialize() -> anyhow::Result<AgentConfig> {
     let path = data_dir()?.join("config.json");
     let mut config = match fs::read(&path) {
-        Ok(bytes) => {
-            serde_json::from_slice::<AgentConfig>(&bytes).context("parse local device config")?
-        }
+        Ok(bytes) => match serde_json::from_slice::<AgentConfig>(&bytes) {
+            Ok(config) => config,
+            Err(error) => {
+                let backup = backup_invalid_config(&path)?;
+                tracing::warn!(
+                    %error,
+                    backup = %backup.display(),
+                    "invalid local device config was preserved and regenerated"
+                );
+                AgentConfig {
+                    device_id: Uuid::new_v4(),
+                    api_base: default_api_base(),
+                    agent_token: None,
+                    remote_device_id: None,
+                }
+            }
+        },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => AgentConfig {
             device_id: Uuid::new_v4(),
             api_base: default_api_base(),
@@ -122,6 +136,27 @@ fn initialize() -> anyhow::Result<AgentConfig> {
         }),
     )?;
     Ok(config)
+}
+
+fn backup_invalid_config(path: &std::path::Path) -> anyhow::Result<PathBuf> {
+    let directory = path
+        .parent()
+        .context("device config has no parent directory")?;
+    for suffix in 0..=u16::MAX {
+        let name = if suffix == 0 {
+            "config.invalid.json".to_string()
+        } else {
+            format!("config.invalid-{suffix}.json")
+        };
+        let backup = directory.join(name);
+        if !backup.exists() {
+            fs::rename(path, &backup).with_context(|| {
+                format!("preserve invalid device config as {}", backup.display())
+            })?;
+            return Ok(backup);
+        }
+    }
+    bail!("could not choose a backup name for the invalid device config")
 }
 
 fn default_api_base() -> String {
@@ -297,14 +332,27 @@ fn persist_remote_state(state: &PersistedRemoteState) -> anyhow::Result<()> {
 }
 
 fn write_json_safely(path: &std::path::Path, value: &impl Serialize) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .context("state file has no parent directory")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("create state directory {}", parent.display()))?;
     let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
+    fs::write(&temporary, serde_json::to_vec_pretty(value)?)
+        .with_context(|| format!("write temporary state file {}", temporary.display()))?;
     // `rename` replaces an existing file on Unix but not on Windows. The UI
     // retains its in-memory state during this tiny replacement window.
     if cfg!(windows) && path.exists() {
-        fs::remove_file(path)?;
+        fs::remove_file(path)
+            .with_context(|| format!("replace existing state file {}", path.display()))?;
     }
-    fs::rename(temporary, path)?;
+    fs::rename(&temporary, path).with_context(|| {
+        format!(
+            "commit temporary state file {} to {}",
+            temporary.display(),
+            path.display()
+        )
+    })?;
     Ok(())
 }
 
