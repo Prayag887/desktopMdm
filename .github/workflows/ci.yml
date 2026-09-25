@@ -24,6 +24,9 @@ jobs:
     # The desktop UI (`emi-device-ui`) is entirely behind `#[cfg(windows)]`, so the
     # Linux job above never compiles a line of it.
     runs-on: windows-latest
+    env:
+      # Match release linkage and catch static-CRT build regressions in CI.
+      RUSTFLAGS: -C target-feature=+crt-static
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable

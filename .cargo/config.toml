@@ -1,0 +1,5 @@
+[target.x86_64-pc-windows-msvc]
+# Ship self-contained Windows binaries. Without this, a clean PC may fail before
+# `main` with "VCRUNTIME140.dll was not found", which the installer previously
+# surfaced later as a misleading local-initialization failure.
+rustflags = ["-C", "target-feature=+crt-static"]

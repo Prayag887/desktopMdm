@@ -11,6 +11,8 @@ jobs:
   windows-desktop:
     runs-on: windows-latest
     env:
+      # Avoid requiring the Microsoft Visual C++ Redistributable on customer PCs.
+      RUSTFLAGS: -C target-feature=+crt-static
       # Add these repo secrets to enable Authenticode signing:
       #   CODE_SIGN_PFX_BASE64     - base64 of your OV/EV code-signing .pfx
       #   CODE_SIGN_PFX_PASSWORD   - the .pfx password
@@ -25,6 +27,17 @@ jobs:
           shared-key: windows
           save-if: false
       - run: cargo build --release --package emi-device-agent
+      - name: Verify binaries do not require the Visual C++ runtime
+        shell: pwsh
+        run: |
+          $objdump = 'C:\Program Files\LLVM\bin\llvm-objdump.exe'
+          if (-not (Test-Path $objdump)) { throw "llvm-objdump.exe not found at $objdump" }
+          foreach ($binary in 'target/release/emi-device-agent.exe', 'target/release/emi-device-ui.exe') {
+            $imports = & $objdump -p $binary
+            if ($imports -match '(?i)(VCRUNTIME|MSVCP|UCRTBASE).*\.dll') {
+              throw "$binary still depends on the Visual C++ runtime"
+            }
+          }
       - name: Code-sign binaries (only if a certificate secret is configured)
         if: ${{ env.SIGN_PFX_BASE64 != '' }}
         shell: pwsh

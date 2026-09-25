@@ -11,6 +11,14 @@ if %errorlevel% neq 0 (
 )
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
+set "INSTALL_EXIT=%ERRORLEVEL%"
 echo.
-echo Done. You can close this window.
+if not "%INSTALL_EXIT%"=="0" (
+  echo Installation FAILED with exit code %INSTALL_EXIT%.
+  echo Review the error shown above. Nothing has been reported as installed.
+  pause
+  exit /b %INSTALL_EXIT%
+)
+echo Installation completed successfully. You can close this window.
 pause
+exit /b 0

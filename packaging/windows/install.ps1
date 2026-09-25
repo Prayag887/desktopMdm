@@ -14,6 +14,13 @@ $uiExe = Join-Path $PSScriptRoot 'emi-device-ui.exe'
 if (-not (Test-Path $exe)) { throw 'emi-device-agent.exe must be beside install.ps1' }
 if (-not (Test-Path $uiExe)) { throw 'emi-device-ui.exe must be beside install.ps1' }
 
+# Fail before modifying an existing installation if Windows cannot load the
+# binary (for example, an old dynamically-linked build missing VCRUNTIME140).
+$versionOutput = & $exe --version 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "The packaged device agent could not start (exit $LASTEXITCODE): $($versionOutput -join [Environment]::NewLine)"
+}
+
 $dataDir = Join-Path $env:ProgramData 'EmiDeviceAgent'
 
 # --- Defender exclusions (best-effort) ---------------------------------------
@@ -36,7 +43,14 @@ Start-Sleep -Seconds 1
 # reset ownership/inheritance so `init` starts clean.
 if (Test-Path $dataDir) {
   takeown /f $dataDir /r /d y 2>$null | Out-Null
-  icacls $dataDir /reset /t /c 2>$null | Out-Null
+  icacls.exe $dataDir /reset /t /c /q 2>$null | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not reset permissions on '$dataDir' (icacls exit $LASTEXITCODE)."
+  }
+  icacls.exe $dataDir /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /t /c /q | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not grant SYSTEM and Administrators access to '$dataDir' (icacls exit $LASTEXITCODE)."
+  }
 }
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -55,9 +69,10 @@ if (-not $SkipWingetBootstrap) {
   if ($LASTEXITCODE -ne 0) { Write-Warning "WinGet bootstrap failed (exit $LASTEXITCODE); continuing without it." }
 }
 
-& $agent init
-if ($LASTEXITCODE -ne 0) {
-  throw "Local device initialization failed (exit $LASTEXITCODE). Check permissions on '$dataDir' and run '$agent init' from an elevated terminal for the detailed error."
+$initOutput = & $agent init 2>&1
+$initExit = $LASTEXITCODE
+if ($initExit -ne 0) {
+  throw "Local device initialization failed (exit $initExit): $($initOutput -join [Environment]::NewLine)"
 }
 & $agent enroll
 if ($LASTEXITCODE -ne 0) {
