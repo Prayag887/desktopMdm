@@ -32,6 +32,7 @@ Non-goals (explicitly forbidden in this design):
 - No interference with Windows Recovery Environment (WinRE).
 - No absolute uninstall prevention against an authorized administrator / WinRE.
 - No stealth, no persistence of the restriction against recovery accounts.
+- No claim that the local agent survives bare-metal reimaging, SSD replacement, or motherboard replacement. Post-reset restoration is handled by the separately configured Autopilot/Intune deployment described in `enterprise-antitheft-deployment.md`.
 
 ## 2. Why "disable the keyboard completely" is rejected
 
@@ -127,7 +128,7 @@ determined user can leave. Tell customers this before enrollment.
 
 ## 7. Prototype vs production — hard separation
 
-**Prototype (this repo, lab / VM only):**
+**Agent behavior implemented in this repo:**
 
 - The fullscreen restriction screen is a normal egui window.
 - Keyboard suppression is **window-scoped**: the app drains its own key/text
@@ -135,9 +136,9 @@ determined user can leave. Tell customers this before enrollment.
   has focus. It does **not** and **cannot** block OS-global Alt+Tab / Win — that
   is Keyboard Filter's job.
 - Reversible: administrator `UNLOCK`/`RELEASE`, offline recovery token, or local administrator/WinRE recovery.
-  Restart always begins unrestricted. Nothing is written to firmware or OS.
+  The service persists the last server-confirmed state, so an ordinary restart does not silently release an existing restriction. Nothing is written to firmware, WinRE, or a hidden persistence layer.
 
-**Production (recommended, NOT implemented here):**
+**Production controls configured outside this repo:**
 
 - Enforce via Assigned Access + Shell Launcher + Keyboard Filter + AppLocker
   applied to the enrolled SID only, delivered through MDM CSP.
@@ -145,6 +146,8 @@ determined user can leave. Tell customers this before enrollment.
   service; the UI only reflects it.
 - Ship code-signed binaries; keep WinRE and admin accounts exempt.
 - Never ship the prototype's window-scoped suppression as the enforcement layer.
+- Register the hardware with Windows Autopilot, enroll it in Intune, and assign the signed agent as a Required Win32 app so management can be restored after supported reset/reinstallation flows.
+- Apply BitLocker, Secure Boot, and—only on supported models—DFCI policy. BitLocker protects data but cannot prohibit SSD erasure.
 
 ## 8. Reference: production Keyboard Filter (do NOT run on a workstation)
 

@@ -40,7 +40,7 @@ jobs:
       - name: Validate Windows installer scripts
         shell: pwsh
         run: |
-          Get-ChildItem packaging/windows/*.ps1 | ForEach-Object {
+          Get-ChildItem packaging/windows -Filter *.ps1 -Recurse | ForEach-Object {
             $tokens = $null
             $parseErrors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null

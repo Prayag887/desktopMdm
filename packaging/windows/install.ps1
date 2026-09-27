@@ -2,7 +2,9 @@
 [CmdletBinding()]
 param(
   [switch]$SkipWingetBootstrap,
-  [string]$InstallDir = "$env:ProgramFiles\EmiDeviceAgent"
+  [string]$InstallDir = "$env:ProgramFiles\EmiDeviceAgent",
+  [UInt64]$CommandSigningKeyId = 0,
+  [string]$CommandSigningPublicKey = ''
 )
 $ErrorActionPreference = 'Stop'
 $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
@@ -22,13 +24,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $dataDir = Join-Path $env:ProgramData 'EmiDeviceAgent'
-
-# --- Defender exclusions (best-effort) ---------------------------------------
-# The app is behaviour-flagged (keyboard hook, shell lock); on a device you own,
-# exclude it so Defender does not quarantine it or block the install. On a fleet,
-# push the same exclusion via MDM.
-foreach ($x in $InstallDir, $dataDir) { try { Add-MpPreference -ExclusionPath $x -ErrorAction SilentlyContinue } catch {} }
-foreach ($p in 'emi-device-ui.exe', 'emi-device-agent.exe') { try { Add-MpPreference -ExclusionProcess $p -ErrorAction SilentlyContinue } catch {} }
+if (($CommandSigningKeyId -eq 0) -ne ([string]::IsNullOrWhiteSpace($CommandSigningPublicKey))) {
+  throw 'CommandSigningKeyId and CommandSigningPublicKey must be supplied together; key ID must be nonzero.'
+}
 
 # --- Stop and REMOVE any previous instance so files are not locked -----------
 Get-Process -Name 'emi-device-ui', 'emi-device-agent' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -73,6 +71,13 @@ $initOutput = & $agent init 2>&1
 $initExit = $LASTEXITCODE
 if ($initExit -ne 0) {
   throw "Local device initialization failed (exit $initExit): $($initOutput -join [Environment]::NewLine)"
+}
+if ($CommandSigningKeyId -ne 0) {
+  $trustOutput = & $agent trust-command-key --key-id $CommandSigningKeyId --public-key $CommandSigningPublicKey 2>&1
+  $trustExit = $LASTEXITCODE
+  if ($trustExit -ne 0) {
+    throw "Command signing key configuration failed (exit $trustExit): $($trustOutput -join [Environment]::NewLine)"
+  }
 }
 & $agent enroll
 if ($LASTEXITCODE -ne 0) {

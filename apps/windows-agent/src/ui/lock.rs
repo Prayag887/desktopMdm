@@ -231,27 +231,17 @@ impl DeviceApp {
                 // unlock word (or a valid signed token). No click-to-leave.
                 ui.add_space(20.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    let (banner, title, description) = lock_screen_copy(&self.remote_lock_reason);
                     ui.label(
-                        RichText::new("EMI DEVICE · ACCESS PAUSED")
+                        RichText::new(banner)
                             .size(15.0)
                             .color(Color32::from_rgb(143, 198, 255)),
                     );
                     self.render_remote_lock_reason(ui);
                     ui.add_space(12.0);
-                    ui.label(
-                        RichText::new("Payment required to continue")
-                            .size(34.0)
-                            .strong(),
-                    );
+                    ui.label(RichText::new(title).size(34.0).strong());
                     ui.add_space(10.0);
-                    ui.label(
-                        RichText::new(
-                            "This company-owned device is under an EMI financing agreement. \
-                             Access is paused until the outstanding installment is recorded. \
-                             Windows has not crashed and your files are safe.",
-                        )
-                        .size(20.0),
-                    );
+                    ui.label(RichText::new(description).size(20.0));
                     ui.add_space(28.0);
                     ui.horizontal_wrapped(|ui| {
                         if let Some(qr) = &self.qr {
@@ -322,5 +312,43 @@ impl DeviceApp {
                 });
             });
         self.recovery_focused = recovery_focused;
+    }
+}
+
+fn is_theft_reason(reason: &str) -> bool {
+    reason.trim().eq_ignore_ascii_case("THEFT")
+}
+
+fn lock_screen_copy(reason: &str) -> (&'static str, &'static str, &'static str) {
+    if is_theft_reason(reason) {
+        (
+            "MANAGED DEVICE · REPORTED LOST OR STOLEN",
+            "This device has been reported lost or stolen",
+            "Access has been restricted by the device administrator. If you found this device, return it to its owner or contact the organization identified on the device. Windows has not crashed and files remain protected.",
+        )
+    } else {
+        (
+            "EMI DEVICE · ACCESS PAUSED",
+            "Payment required to continue",
+            "This company-owned device is under an EMI financing agreement. Access is paused until the outstanding installment is recorded. Windows has not crashed and your files are safe.",
+        )
+    }
+}
+
+#[cfg(test)]
+mod theft_tests {
+    use super::{is_theft_reason, lock_screen_copy};
+
+    #[test]
+    fn theft_reason_detection_is_explicit_and_case_insensitive() {
+        assert!(is_theft_reason("THEFT"));
+        assert!(is_theft_reason(" theft "));
+        assert!(!is_theft_reason("PAYMENT_OVERDUE"));
+        assert!(!is_theft_reason("suspected theft"));
+        let (banner, title, description) = lock_screen_copy("theft");
+        assert!(banner.contains("REPORTED LOST OR STOLEN"));
+        assert!(title.contains("reported lost or stolen"));
+        assert!(description.contains("return it to its owner"));
+        assert!(!description.to_ascii_lowercase().contains("payment"));
     }
 }

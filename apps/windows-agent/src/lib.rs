@@ -1,5 +1,6 @@
 pub mod agent_api;
 pub mod bluescreen;
+pub mod command_security;
 
 #[cfg(windows)]
 pub mod keyboard_guard;
