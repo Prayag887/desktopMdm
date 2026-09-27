@@ -1,6 +1,6 @@
 # Payment-restricted mode — architecture, threat model, and safety boundaries
 
-> **Installer exception, v0.6.31:** `install.cmd` now disables WinRE after successful installation. References below to untouched or available WinRE describe the restriction runtime, not the installer configuration. Built-in WinRE recovery and Autopilot Reset require an administrator to run `reagentc /enable` first. Keep a working administrator account and external recovery media.
+> Installer exception: `install.cmd` disables WinRE after installation. References below to WinRE availability describe runtime behavior; built-in recovery must first be re-enabled with elevated `reagentc /enable`. Preserve administrator sign-in and external recovery media.
 
 > Scope: authorized EMI device management on **company-owned** Windows PCs, with
 > customer consent captured at enrollment. This document describes a *safe,
@@ -34,6 +34,7 @@ Non-goals (explicitly forbidden in this design):
 - No interference with Windows Recovery Environment (WinRE).
 - No absolute uninstall prevention against an authorized administrator / WinRE.
 - No stealth, no persistence of the restriction against recovery accounts.
+- No claim that the local agent survives bare-metal reimaging, SSD replacement, or motherboard replacement. Post-reset restoration is handled by the separately configured Autopilot/Intune deployment described in `enterprise-antitheft-deployment.md`.
 
 ## 2. Why "disable the keyboard completely" is rejected
 
@@ -129,7 +130,7 @@ determined user can leave. Tell customers this before enrollment.
 
 ## 7. Prototype vs production — hard separation
 
-**Prototype (this repo, lab / VM only):**
+**Agent behavior implemented in this repo:**
 
 - The fullscreen restriction screen is a normal egui window.
 - Keyboard suppression is **window-scoped**: the app drains its own key/text
@@ -137,9 +138,9 @@ determined user can leave. Tell customers this before enrollment.
   has focus. It does **not** and **cannot** block OS-global Alt+Tab / Win — that
   is Keyboard Filter's job.
 - Reversible: administrator `UNLOCK`/`RELEASE`, offline recovery token, or local administrator/WinRE recovery.
-  Restart always begins unrestricted. Nothing is written to firmware or OS.
+  The service persists the last server-confirmed state, so an ordinary restart does not silently release an existing restriction. Nothing is written to firmware, WinRE, or a hidden persistence layer.
 
-**Production (recommended, NOT implemented here):**
+**Production controls configured outside this repo:**
 
 - Enforce via Assigned Access + Shell Launcher + Keyboard Filter + AppLocker
   applied to the enrolled SID only, delivered through MDM CSP.
@@ -147,6 +148,8 @@ determined user can leave. Tell customers this before enrollment.
   service; the UI only reflects it.
 - Ship code-signed binaries; keep WinRE and admin accounts exempt.
 - Never ship the prototype's window-scoped suppression as the enforcement layer.
+- Register the hardware with Windows Autopilot, enroll it in Intune, and assign the signed agent as a Required Win32 app so management can be restored after supported reset/reinstallation flows.
+- Apply BitLocker, Secure Boot, and—only on supported models—DFCI policy. BitLocker protects data but cannot prohibit SSD erasure.
 
 ## 8. Reference: production Keyboard Filter (do NOT run on a workstation)
 
@@ -205,31 +208,35 @@ The normal release path is an administrator `UNLOCK` or `RELEASE` command. Offli
 
 ### A. Offline signed unlock token (the "only the owner can do it" path)
 
-The device embeds an Ed25519 **public** key (`OWNER_PUBLIC_KEY_HEX` in
-`emi-device-ui.rs`). The matching **signing** key lives only with the owner. Only
-that key can mint a token the device accepts. Crypto lives in
-`crates/emi-core/src/recovery.rs`.
+The installer provisions only the owner's Ed25519 public key from
+`recovery-public-key.hex`. There is no built-in lab key or shared unlock word.
+The signing key stays off-device, in the owner's private vault.
 
-1. Once, offline, generate your keypair and embed the public half:
+1. Generate a replacement key on an offline Unix owner workstation:
    ```sh
-   cargo run --example keygen -p emi-core
+   cargo run --example keygen -p emi-core -- /secure/owner-recovery.key
    ```
-   Put the printed PUBLIC key into `OWNER_PUBLIC_KEY_HEX`, rebuild, deploy.
-   Store the SIGNING key in an offline vault. Never put it on a device.
-2. To unlock a specific device, read its **Device ID** from the restriction
-   screen, then mint a short-lived token:
+   The command refuses to overwrite files, creates an owner-only private file,
+   and prints only the public key. Deploy that public value with
+   `trust-recovery-key --public-key-hex <public-hex>`, or use the installer's
+   `-RecoveryPublicKeyHex` parameter. Rotation preserves the counter.
+2. Read the local Device ID on the restriction screen and mint a short token:
    ```sh
-   cargo run --example mint-unlock -p emi-core -- \
-       <signing-key-hex> <device-id> <counter> <ttl-minutes>
+   cargo run --example mint-unlock -p emi-core -- /secure/owner-recovery.key <device-id> <counter> <ttl-minutes>
    ```
-   `counter` must be greater than any value used before for that device (the
-   device stores the last accepted counter in
-   `%PROGRAMDATA%\EmiDeviceAgent\unlock-counter.txt` and rejects `<=`).
-3. Paste the `EMIU1-…` token into the device's recovery field → **Unlock**.
+   The counter must exceed the last consumed counter; TTL is 1–60 minutes.
+   The key is read from a file rather than passed on the command line.
+3. Enter the token and press Unlock. The local service verifies it and atomically
+   stores the counter and request-specific receipt in protected `recovery-state.json`.
+   The UI releases only on that receipt. The fixed request mailbox is writable by
+   users, but its ownership, deletion, and replacement rights stay administrative.
 
-Verification is fail-safe: wrong key, wrong device, expired, replayed, or
-malformed → refused, device stays locked. A leaked token only works on one
-device, only until its short expiry, and only once (counter).
+Malformed/expired/wrong-device/replayed tokens are refused. Missing or corrupt
+state and a stopped service require administrator recovery. A malicious local
+user can disrupt the shared request mailbox (denial of service), but cannot
+write a success receipt. Administrators can reset local state; this is not a
+hardware anti-rollback counter. Remote state remains authoritative on the next
+check-in.
 
 ### B. Administrator account (the everyday recovery path)
 
@@ -243,8 +250,8 @@ the teardown, which restores Explorer and removes every layer:
 
 ### C. Windows Recovery Environment (last resort)
 
-WinRE is never touched. From WinRE you can reach an admin command prompt / reset.
-This is the floor that guarantees a device is never permanently bricked.
+The restriction runtime does not modify WinRE. The installer wrapper disables it;
+run elevated `reagentc /enable` to restore built-in recovery, or use trusted external recovery media.
 
 Keep at least B or C available at all times. Losing the signing key costs you the
 convenient path A, not the device.

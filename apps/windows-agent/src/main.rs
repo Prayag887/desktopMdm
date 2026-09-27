@@ -5,8 +5,12 @@ use emi_core::{BiosProvider, DeviceHealth};
 use emi_device_agent::agent_api::{
     AgentApi, CommandAction, DEFAULT_API_BASE, LockState, LockStateKind, PersistedRemoteState,
 };
+use emi_device_agent::command_security::{
+    CommandSecurityState, applied_security_state, normalize_public_key, verify_command_patch,
+};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs,
     path::PathBuf,
     process::Command,
@@ -44,6 +48,25 @@ enum AgentCommand {
     Bootstrap,
     /// Show this PC's local identity.
     Status,
+    /// Trust an admin command-signing key after validating its Ed25519 encoding.
+    TrustCommandKey {
+        #[arg(long)]
+        key_id: u64,
+        #[arg(long)]
+        public_key: String,
+    },
+    /// Validate deployment public keys without changing any local state.
+    ValidatePublicKeys {
+        #[arg(long)]
+        command_public_key: Option<String>,
+        #[arg(long)]
+        recovery_public_key_hex: Option<String>,
+    },
+    /// Provision the offline recovery public key; no built-in recovery secret.
+    TrustRecoveryKey {
+        #[arg(long)]
+        public_key_hex: String,
+    },
     #[command(hide = true)]
     Service,
 }
@@ -60,6 +83,10 @@ struct AgentConfig {
     agent_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     remote_device_id: Option<Uuid>,
+    /// Ed25519 verification keys keyed by the API's `signing_key_id`.
+    /// There is deliberately no built-in key or permissive fallback.
+    #[serde(default)]
+    trusted_command_signing_keys: BTreeMap<u64, String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -87,8 +114,42 @@ fn main() -> anyhow::Result<()> {
             );
             Ok(())
         }
+        AgentCommand::TrustCommandKey { key_id, public_key } => {
+            trust_command_key(key_id, &public_key)
+        }
+        AgentCommand::ValidatePublicKeys {
+            command_public_key,
+            recovery_public_key_hex,
+        } => {
+            if let Some(key) = command_public_key {
+                normalize_public_key(&key)?;
+            }
+            if let Some(key) = recovery_public_key_hex {
+                emi_device_agent::recovery_service::validate_public_key(&key)?;
+            }
+            Ok(())
+        }
+        AgentCommand::TrustRecoveryKey { public_key_hex } => {
+            emi_device_agent::recovery_service::provision(&data_dir()?, &public_key_hex)
+        }
         AgentCommand::Service => service_entry(),
     }
+}
+
+fn trust_command_key(key_id: u64, public_key: &str) -> anyhow::Result<()> {
+    if key_id == 0 {
+        bail!("command signing key ID must be greater than zero");
+    }
+    // Validate before reading or rewriting configuration, so invalid input can
+    // never mutate an otherwise healthy installation.
+    let public_key = normalize_public_key(public_key)?;
+    let mut config = initialize()?;
+    config
+        .trusted_command_signing_keys
+        .insert(key_id, public_key);
+    write_json_safely(&data_dir()?.join("config.json"), &config)?;
+    info!(key_id, "trusted command signing key configured");
+    Ok(())
 }
 
 fn initialize() -> anyhow::Result<AgentConfig> {
@@ -108,6 +169,7 @@ fn initialize() -> anyhow::Result<AgentConfig> {
                     api_base: default_api_base(),
                     agent_token: None,
                     remote_device_id: None,
+                    trusted_command_signing_keys: BTreeMap::new(),
                 }
             }
         },
@@ -116,6 +178,7 @@ fn initialize() -> anyhow::Result<AgentConfig> {
             api_base: default_api_base(),
             agent_token: None,
             remote_device_id: None,
+            trusted_command_signing_keys: BTreeMap::new(),
         },
         Err(error) => return Err(error).context("read local device config"),
     };
@@ -201,6 +264,25 @@ fn enroll_config(config: &mut AgentConfig, server: &str) -> anyhow::Result<()> {
 
 fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
     let mut config = initialize()?;
+    let recovery_directory = data_dir()?;
+    let recovery_device = config.device_id;
+    // One worker in the Windows service only; short-lived health runs never
+    // compete for mailbox processing. Filesystem locking serializes transactions.
+    if auto_enroll {
+        std::thread::spawn(move || {
+            while !STOP_REQUESTED.load(Ordering::Relaxed) {
+                if let Err(error) = emi_device_agent::recovery_service::process(
+                    &recovery_directory,
+                    recovery_device,
+                    Utc::now(),
+                ) {
+                    tracing::warn!(%error, "offline recovery unavailable; administrator recovery remains available");
+                    std::thread::sleep(Duration::from_secs(5));
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
     let mut next_health = Instant::now();
     let mut next_check_in = Instant::now();
     let mut next_enrollment = Instant::now();
@@ -241,7 +323,12 @@ fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
                 config.remote_device_id,
             )
         {
-            if let Err(error) = synchronize_remote_state(api, token, device_uuid) {
+            if let Err(error) = synchronize_remote_state(
+                api,
+                token,
+                device_uuid,
+                &config.trusted_command_signing_keys,
+            ) {
                 tracing::warn!(%error, "EMI admin synchronization failed; retaining last applied state");
             }
             next_check_in = Instant::now() + Duration::from_secs(60);
@@ -253,49 +340,57 @@ fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
     }
 }
 
-fn synchronize_remote_state(api: &AgentApi, token: &str, device_uuid: Uuid) -> anyhow::Result<()> {
+fn synchronize_remote_state(
+    api: &AgentApi,
+    token: &str,
+    device_uuid: Uuid,
+    trusted_signing_keys: &BTreeMap<u64, String>,
+) -> anyhow::Result<()> {
+    let _guard = emi_device_agent::state_store::lock(&data_dir()?, "command.lock")?;
     let check_in = api.check_in(token, env!("CARGO_PKG_VERSION"))?;
     let Some(command) = check_in.pending_command else {
-        return persist_remote_state(&PersistedRemoteState {
-            device_uuid,
-            lock_state: check_in.lock_state,
-            checked_at: Utc::now(),
-            server_time: check_in.server_time,
-        });
+        // A bare check-in state has no signature. It may refresh liveness but
+        // must never change an already-applied security state; every state
+        // transition is authorized by a signed command patch.
+        return refresh_remote_check_in(device_uuid, check_in.server_time);
     };
     let mut patch_uuid = None;
     let result = (|| -> anyhow::Result<()> {
-        if command.expires_at <= check_in.server_time {
-            bail!("pending command is expired");
-        }
-        if command.nonce.trim().is_empty() {
-            bail!("pending command has no nonce");
-        }
         let patch = api
             .current_patch(token)?
             .context("server reported a pending command but returned no patch")?;
         patch_uuid = Some(patch.uuid);
-        if patch.lock_command_uuid != command.uuid || patch.action != command.action {
-            bail!("patch metadata does not match the pending command");
-        }
-        if patch.expires_at <= check_in.server_time {
-            bail!("command patch is expired");
-        }
-        if patch.version == 0 || patch.signed_payload.trim().is_empty() || patch.signing_key_id == 0
-        {
-            bail!("command patch is missing signing metadata");
-        }
-        api.verify_patch_download(token, &patch)?;
-        let state = command_target_state(command.action)?;
-        persist_remote_state(&PersistedRemoteState {
+        let security_state = load_command_security_state()?;
+        verify_command_patch(
             device_uuid,
-            lock_state: LockState {
-                state,
-                reason: command.reason.clone(),
-                changed_at: check_in.server_time,
+            &command,
+            &patch,
+            check_in.server_time.max(Utc::now()),
+            trusted_signing_keys,
+            &security_state,
+        )?;
+        api.verify_patch_download(token, &patch)?;
+        if command.expires_at <= Utc::now() || patch.expires_at <= Utc::now() {
+            bail!("command expired while downloading its patch");
+        }
+        let state = command_target_state(command.action)?;
+        persist_remote_state(&SecuredRemoteState {
+            command_security: applied_security_state(
+                device_uuid,
+                &security_state,
+                &command,
+                &patch,
+            )?,
+            remote: PersistedRemoteState {
+                device_uuid,
+                lock_state: LockState {
+                    state,
+                    reason: command.reason.clone(),
+                    changed_at: check_in.server_time,
+                },
+                checked_at: Utc::now(),
+                server_time: check_in.server_time,
             },
-            checked_at: Utc::now(),
-            server_time: check_in.server_time,
         })
     })();
     match result {
@@ -315,6 +410,39 @@ fn synchronize_remote_state(api: &AgentApi, token: &str, device_uuid: Uuid) -> a
     }
 }
 
+fn refresh_remote_check_in(
+    device_uuid: Uuid,
+    server_time: chrono::DateTime<Utc>,
+) -> anyhow::Result<()> {
+    let path = data_dir()?.join("remote-state.json");
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).context("read applied remote state"),
+    };
+    let mut state: SecuredRemoteState =
+        serde_json::from_slice(&bytes).context("decode applied remote state")?;
+    if state.remote.device_uuid != device_uuid {
+        bail!("applied remote state belongs to another device");
+    }
+    state.remote.checked_at = Utc::now();
+    state.remote.server_time = server_time;
+    persist_remote_state(&state)
+}
+
+fn load_command_security_state() -> anyhow::Result<CommandSecurityState> {
+    let path = data_dir()?.join("remote-state.json");
+    match fs::read(&path) {
+        Ok(bytes) => Ok(serde_json::from_slice::<SecuredRemoteState>(&bytes)
+            .context("decode command replay state")?
+            .command_security),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(CommandSecurityState::default())
+        }
+        Err(error) => Err(error).context("read command replay state"),
+    }
+}
+
 fn command_target_state(action: CommandAction) -> anyhow::Result<LockStateKind> {
     match action {
         CommandAction::Lock => Ok(LockStateKind::Locked),
@@ -327,33 +455,24 @@ fn command_target_state(action: CommandAction) -> anyhow::Result<LockStateKind> 
     }
 }
 
-fn persist_remote_state(state: &PersistedRemoteState) -> anyhow::Result<()> {
+#[derive(Serialize, Deserialize)]
+struct SecuredRemoteState {
+    #[serde(flatten)]
+    remote: PersistedRemoteState,
+    #[serde(default)]
+    command_security: CommandSecurityState,
+}
+
+fn persist_remote_state(state: &SecuredRemoteState) -> anyhow::Result<()> {
     write_json_safely(&data_dir()?.join("remote-state.json"), &state)
 }
 
 fn write_json_safely(path: &std::path::Path, value: &impl Serialize) -> anyhow::Result<()> {
-    let parent = path
-        .parent()
-        .context("state file has no parent directory")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("create state directory {}", parent.display()))?;
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(value)?)
-        .with_context(|| format!("write temporary state file {}", temporary.display()))?;
-    // `rename` replaces an existing file on Unix but not on Windows. The UI
-    // retains its in-memory state during this tiny replacement window.
-    if cfg!(windows) && path.exists() {
-        fs::remove_file(path)
-            .with_context(|| format!("replace existing state file {}", path.display()))?;
-    }
-    fs::rename(&temporary, path).with_context(|| {
-        format!(
-            "commit temporary state file {} to {}",
-            temporary.display(),
-            path.display()
-        )
-    })?;
-    Ok(())
+    emi_device_agent::state_store::write_json(
+        path,
+        value,
+        path.file_name().is_some_and(|name| name == "config.json"),
+    )
 }
 
 fn collect_health(device_id: Uuid) -> DeviceHealth {
