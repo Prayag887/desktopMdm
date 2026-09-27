@@ -46,3 +46,9 @@ jobs:
             [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
             if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
           }
+      - name: Verify state and recovery mailbox ACLs
+        shell: pwsh
+        run: ./packaging/windows/tests/Test-StateAcl.ps1 -AgentPath ./target/debug/emi-device-agent.exe
+      - name: Verify optional desktop launch failure handling
+        shell: pwsh
+        run: ./packaging/windows/tests/Test-CompanionLaunch.ps1

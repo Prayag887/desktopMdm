@@ -36,6 +36,8 @@ pub struct CommandSecurityState {
     pub highest_patch_version: u32,
     pub last_patch_uuid: Option<Uuid>,
     pub last_command_uuid: Option<Uuid>,
+    #[serde(default)]
+    pub last_message_sha256: Option<String>,
     /// SHA-256 digests are retained so a nonce can never be reused by a later
     /// higher-version command without persisting the server-provided nonce.
     pub consumed_nonce_sha256: BTreeSet<String>,
@@ -71,7 +73,10 @@ pub fn verify_command_patch(
         bail!("command patch version must be greater than zero");
     }
 
-    let exact_retry = state.last_patch_uuid == Some(patch.uuid)
+    let message = canonical_patch_message(device_uuid, command, patch)?;
+    let message_digest = format!("{:x}", Sha256::digest(message.as_bytes()));
+    let exact_retry = state.last_message_sha256.as_deref() == Some(message_digest.as_str())
+        && state.last_patch_uuid == Some(patch.uuid)
         && state.last_command_uuid == Some(command.uuid)
         && state
             .consumed_nonce_sha256
@@ -97,25 +102,31 @@ pub fn verify_command_patch(
     let key = VerifyingKey::from_bytes(&key_bytes).context("invalid Ed25519 public key")?;
     let signature_bytes = decode_fixed::<64>(&patch.signed_payload, "Ed25519 signature")?;
     let signature = Signature::from_bytes(&signature_bytes);
-    let message = canonical_patch_message(device_uuid, command, patch)?;
     key.verify_strict(message.as_bytes(), &signature)
         .context("command patch Ed25519 signature is invalid")
 }
 
-/// Advances replay state only after a command has been applied successfully.
-#[must_use]
+/// Computes replay state to commit atomically with the applied remote state.
+///
+/// # Errors
+/// Returns an error if canonical serialization fails.
 pub fn applied_security_state(
+    device_uuid: Uuid,
     previous: &CommandSecurityState,
     command: &PendingCommand,
     patch: &PatchFile,
-) -> CommandSecurityState {
+) -> anyhow::Result<CommandSecurityState> {
     let mut next = previous.clone();
+    next.last_message_sha256 = Some(format!(
+        "{:x}",
+        Sha256::digest(canonical_patch_message(device_uuid, command, patch)?.as_bytes())
+    ));
     next.highest_patch_version = patch.version;
     next.last_patch_uuid = Some(patch.uuid);
     next.last_command_uuid = Some(command.uuid);
     next.consumed_nonce_sha256
         .insert(nonce_digest(&command.nonce));
-    next
+    Ok(next)
 }
 
 /// Produces the stable, domain-separated message the backend must sign.
@@ -155,7 +166,10 @@ pub fn canonical_patch_message(
 /// containing exactly one valid 32-byte Ed25519 public key.
 pub fn normalize_public_key(encoded: &str) -> anyhow::Result<String> {
     let bytes = decode_fixed::<32>(encoded, "Ed25519 public key")?;
-    VerifyingKey::from_bytes(&bytes).context("invalid Ed25519 public key")?;
+    let key = VerifyingKey::from_bytes(&bytes).context("invalid Ed25519 public key")?;
+    if key.is_weak() {
+        bail!("weak Ed25519 public key is not allowed");
+    }
     Ok(general_purpose::STANDARD.encode(bytes))
 }
 
@@ -242,7 +256,9 @@ mod tests {
             &CommandSecurityState::default(),
         )
         .unwrap();
-        let state = applied_security_state(&CommandSecurityState::default(), &command, &patch);
+        let state =
+            applied_security_state(device, &CommandSecurityState::default(), &command, &patch)
+                .unwrap();
         verify_command_patch(
             device,
             &command,
@@ -353,10 +369,37 @@ mod tests {
     }
 
     #[test]
+    fn rejects_resigned_substitution_disguised_as_exact_retry() {
+        let (device, mut command, mut patch, key) = fixtures();
+        sign(device, &command, &mut patch, &key);
+        let state =
+            applied_security_state(device, &CommandSecurityState::default(), &command, &patch)
+                .unwrap();
+        command.reason = "different signed reason".into();
+        sign(device, &command, &mut patch, &key);
+        let result = verify_command_patch(
+            device,
+            &command,
+            &patch,
+            "2030-01-01T00:00:00Z".parse().unwrap(),
+            &keys(&key),
+            &state,
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("replay or rollback")
+        );
+    }
+
+    #[test]
     fn rejects_rollback_and_nonce_reuse() {
         let (device, command, mut patch, key) = fixtures();
         sign(device, &command, &mut patch, &key);
-        let mut state = applied_security_state(&CommandSecurityState::default(), &command, &patch);
+        let mut state =
+            applied_security_state(device, &CommandSecurityState::default(), &command, &patch)
+                .unwrap();
         state.highest_patch_version = patch.version + 1;
         assert!(
             verify_command_patch(

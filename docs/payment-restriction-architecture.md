@@ -1,5 +1,7 @@
 # Payment-restricted mode — architecture, threat model, and safety boundaries
 
+> Installer exception: `install.cmd` disables WinRE after installation. References below to WinRE availability describe runtime behavior; built-in recovery must first be re-enabled with elevated `reagentc /enable`. Preserve administrator sign-in and external recovery media.
+
 > Scope: authorized EMI device management on **company-owned** Windows PCs, with
 > customer consent captured at enrollment. This document describes a *safe,
 > reversible* design and separates a **lab-safe prototype** (in this repo) from
@@ -206,31 +208,35 @@ The normal release path is an administrator `UNLOCK` or `RELEASE` command. Offli
 
 ### A. Offline signed unlock token (the "only the owner can do it" path)
 
-The device embeds an Ed25519 **public** key (`OWNER_PUBLIC_KEY_HEX` in
-`emi-device-ui.rs`). The matching **signing** key lives only with the owner. Only
-that key can mint a token the device accepts. Crypto lives in
-`crates/emi-core/src/recovery.rs`.
+The installer provisions only the owner's Ed25519 public key from
+`recovery-public-key.hex`. There is no built-in lab key or shared unlock word.
+The signing key stays off-device, in the owner's private vault.
 
-1. Once, offline, generate your keypair and embed the public half:
+1. Generate a replacement key on an offline Unix owner workstation:
    ```sh
-   cargo run --example keygen -p emi-core
+   cargo run --example keygen -p emi-core -- /secure/owner-recovery.key
    ```
-   Put the printed PUBLIC key into `OWNER_PUBLIC_KEY_HEX`, rebuild, deploy.
-   Store the SIGNING key in an offline vault. Never put it on a device.
-2. To unlock a specific device, read its **Device ID** from the restriction
-   screen, then mint a short-lived token:
+   The command refuses to overwrite files, creates an owner-only private file,
+   and prints only the public key. Deploy that public value with
+   `trust-recovery-key --public-key-hex <public-hex>`, or use the installer's
+   `-RecoveryPublicKeyHex` parameter. Rotation preserves the counter.
+2. Read the local Device ID on the restriction screen and mint a short token:
    ```sh
-   cargo run --example mint-unlock -p emi-core -- \
-       <signing-key-hex> <device-id> <counter> <ttl-minutes>
+   cargo run --example mint-unlock -p emi-core -- /secure/owner-recovery.key <device-id> <counter> <ttl-minutes>
    ```
-   `counter` must be greater than any value used before for that device (the
-   device stores the last accepted counter in
-   `%PROGRAMDATA%\EmiDeviceAgent\unlock-counter.txt` and rejects `<=`).
-3. Paste the `EMIU1-…` token into the device's recovery field → **Unlock**.
+   The counter must exceed the last consumed counter; TTL is 1–60 minutes.
+   The key is read from a file rather than passed on the command line.
+3. Enter the token and press Unlock. The local service verifies it and atomically
+   stores the counter and request-specific receipt in protected `recovery-state.json`.
+   The UI releases only on that receipt. The fixed request mailbox is writable by
+   users, but its ownership, deletion, and replacement rights stay administrative.
 
-Verification is fail-safe: wrong key, wrong device, expired, replayed, or
-malformed → refused, device stays locked. A leaked token only works on one
-device, only until its short expiry, and only once (counter).
+Malformed/expired/wrong-device/replayed tokens are refused. Missing or corrupt
+state and a stopped service require administrator recovery. A malicious local
+user can disrupt the shared request mailbox (denial of service), but cannot
+write a success receipt. Administrators can reset local state; this is not a
+hardware anti-rollback counter. Remote state remains authoritative on the next
+check-in.
 
 ### B. Administrator account (the everyday recovery path)
 
@@ -244,8 +250,8 @@ the teardown, which restores Explorer and removes every layer:
 
 ### C. Windows Recovery Environment (last resort)
 
-WinRE is never touched. From WinRE you can reach an admin command prompt / reset.
-This is the floor that guarantees a device is never permanently bricked.
+The restriction runtime does not modify WinRE. The installer wrapper disables it;
+run elevated `reagentc /enable` to restore built-in recovery, or use trusted external recovery media.
 
 Keep at least B or C available at all times. Losing the signing key costs you the
 convenient path A, not the device.

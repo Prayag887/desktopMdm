@@ -23,7 +23,7 @@ use std::path::Path;
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
-use ed25519_dalek::{Signature, Signer, Verifier};
+use ed25519_dalek::{Signature, Signer};
 pub use ed25519_dalek::{SigningKey, VerifyingKey};
 use uuid::Uuid;
 
@@ -159,7 +159,7 @@ pub fn verify_unlock(
     let (payload, signature_bytes) = raw.split_at(PAYLOAD_LEN);
     let signature = Signature::from_slice(signature_bytes).map_err(|_| UnlockError::Malformed)?;
     trusted
-        .verify(payload, &signature)
+        .verify_strict(payload, &signature)
         .map_err(|_| UnlockError::BadSignature)?;
 
     let mut id_bytes = [0u8; 16];

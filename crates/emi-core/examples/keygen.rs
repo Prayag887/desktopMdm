@@ -1,36 +1,59 @@
-//! Owner tool: generate an Ed25519 unlock keypair. Run ONCE, OFFLINE.
-//!
-//!   cargo run --example keygen -p emi-core
-//!
-//! Keep the printed SIGNING key secret and off every managed device. Embed the
-//! PUBLIC key in the device app (`OWNER_PUBLIC_KEY_HEX`). Anyone who has the
-//! signing key can unlock devices; anyone with only the public key cannot.
-
-use core::fmt::Write as _;
-
+//! Generate an owner recovery key into a new private file, never into stdout.
+//! Run off-device: cargo run --example keygen -p emi-core -- /secure/recovery.key
+#[cfg(not(windows))]
 use ed25519_dalek::SigningKey;
+#[cfg(not(windows))]
 use rand::rngs::OsRng;
+#[cfg(not(windows))]
+use std::{fs::OpenOptions, io::Write as _, path::PathBuf};
+#[cfg(not(windows))]
+use zeroize::Zeroizing;
 
-fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
+#[cfg(not(windows))]
+fn hex(bytes: &[u8]) -> Result<String, std::fmt::Error> {
+    use std::fmt::Write as _;
+    let mut output = String::new();
     for byte in bytes {
-        write!(out, "{byte:02x}").expect("write hex");
+        write!(output, "{byte:02x}")?;
     }
-    out
+    Ok(output)
 }
 
-fn main() {
-    let signing = SigningKey::generate(&mut OsRng);
-    let verifying = signing.verifying_key();
-    println!(
-        "SIGNING KEY (keep secret, offline): {}",
-        hex(&signing.to_bytes())
+#[cfg(not(windows))]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let path = PathBuf::from(
+        std::env::args()
+            .nth(1)
+            .ok_or("usage: keygen <new-private-key-file>")?,
     );
-    println!(
-        "PUBLIC  KEY (embed in the app):      {}",
-        hex(&verifying.to_bytes())
-    );
-    eprintln!();
-    eprintln!("Store the signing key in a password manager / offline vault.");
-    eprintln!("Losing it only means you fall back to admin / WinRE recovery.");
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    #[cfg(not(windows))]
+    {
+        let mut file = options.open(&path)?;
+        let signing = SigningKey::generate(&mut OsRng);
+        let secret = Zeroizing::new(hex(&signing.to_bytes())?);
+        file.write_all(secret.as_bytes())?;
+        file.sync_all()?;
+        let public = hex(&signing.verifying_key().to_bytes())?;
+        println!("{public}");
+        eprintln!(
+            "Private key saved to {}. Back it up in your offline vault; never deploy it to managed devices.",
+            path.display()
+        );
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Err(
+        "Generate owner keys on an offline Unix workstation with owner-only file permissions"
+            .into(),
+    )
 }

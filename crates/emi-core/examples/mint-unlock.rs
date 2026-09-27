@@ -2,7 +2,7 @@
 //! signing key. The device's id is shown on its restriction screen.
 //!
 //!   cargo run --example mint-unlock -p emi-core -- \
-//!       <signing-key-hex> <device-uuid> <counter> <ttl-minutes>
+//!       <private-key-file> <device-uuid> <counter> <ttl-minutes>
 //!
 //! `counter` must be strictly greater than any value already used for that
 //! device (the device rejects reused / rolled-back counters). Pick a short
@@ -29,11 +29,15 @@ fn signing_key_from_hex(hex: &str) -> Option<SigningKey> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let [key_hex, device, counter, ttl] = args.as_slice() else {
-        eprintln!("usage: mint-unlock <signing-key-hex> <device-uuid> <counter> <ttl-minutes>");
+    let [key_file, device, counter, ttl] = args.as_slice() else {
+        eprintln!("usage: mint-unlock <private-key-file> <device-uuid> <counter> <ttl-minutes>");
         return ExitCode::FAILURE;
     };
 
+    let Ok(key_hex) = std::fs::read_to_string(key_file).map(zeroize::Zeroizing::new) else {
+        eprintln!("could not read the owner private-key file");
+        return ExitCode::FAILURE;
+    };
     let Some(signing) = signing_key_from_hex(key_hex.trim()) else {
         eprintln!("signing key must be 64 hex characters");
         return ExitCode::FAILURE;
@@ -47,6 +51,10 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
+    if counter == 0 || !(1..=60).contains(&ttl_minutes) {
+        eprintln!("counter must be positive and ttl-minutes must be 1..60");
+        return ExitCode::FAILURE;
+    }
     let token = UnlockToken {
         device_id,
         counter,

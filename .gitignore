@@ -6,3 +6,8 @@
 /dist/
 *.pdb
 AutopilotHWID*.csv
+
+# Owner/signing secrets never belong in source or release packages.
+*.key
+*.pfx
+*.p12

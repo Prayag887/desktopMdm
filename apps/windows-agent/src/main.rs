@@ -55,6 +55,18 @@ enum AgentCommand {
         #[arg(long)]
         public_key: String,
     },
+    /// Validate deployment public keys without changing any local state.
+    ValidatePublicKeys {
+        #[arg(long)]
+        command_public_key: Option<String>,
+        #[arg(long)]
+        recovery_public_key_hex: Option<String>,
+    },
+    /// Provision the offline recovery public key; no built-in recovery secret.
+    TrustRecoveryKey {
+        #[arg(long)]
+        public_key_hex: String,
+    },
     #[command(hide = true)]
     Service,
 }
@@ -104,6 +116,21 @@ fn main() -> anyhow::Result<()> {
         }
         AgentCommand::TrustCommandKey { key_id, public_key } => {
             trust_command_key(key_id, &public_key)
+        }
+        AgentCommand::ValidatePublicKeys {
+            command_public_key,
+            recovery_public_key_hex,
+        } => {
+            if let Some(key) = command_public_key {
+                normalize_public_key(&key)?;
+            }
+            if let Some(key) = recovery_public_key_hex {
+                emi_device_agent::recovery_service::validate_public_key(&key)?;
+            }
+            Ok(())
+        }
+        AgentCommand::TrustRecoveryKey { public_key_hex } => {
+            emi_device_agent::recovery_service::provision(&data_dir()?, &public_key_hex)
         }
         AgentCommand::Service => service_entry(),
     }
@@ -237,6 +264,25 @@ fn enroll_config(config: &mut AgentConfig, server: &str) -> anyhow::Result<()> {
 
 fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
     let mut config = initialize()?;
+    let recovery_directory = data_dir()?;
+    let recovery_device = config.device_id;
+    // One worker in the Windows service only; short-lived health runs never
+    // compete for mailbox processing. Filesystem locking serializes transactions.
+    if auto_enroll {
+        std::thread::spawn(move || {
+            while !STOP_REQUESTED.load(Ordering::Relaxed) {
+                if let Err(error) = emi_device_agent::recovery_service::process(
+                    &recovery_directory,
+                    recovery_device,
+                    Utc::now(),
+                ) {
+                    tracing::warn!(%error, "offline recovery unavailable; administrator recovery remains available");
+                    std::thread::sleep(Duration::from_secs(5));
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
     let mut next_health = Instant::now();
     let mut next_check_in = Instant::now();
     let mut next_enrollment = Instant::now();
@@ -300,6 +346,7 @@ fn synchronize_remote_state(
     device_uuid: Uuid,
     trusted_signing_keys: &BTreeMap<u64, String>,
 ) -> anyhow::Result<()> {
+    let _guard = emi_device_agent::state_store::lock(&data_dir()?, "command.lock")?;
     let check_in = api.check_in(token, env!("CARGO_PKG_VERSION"))?;
     let Some(command) = check_in.pending_command else {
         // A bare check-in state has no signature. It may refresh liveness but
@@ -318,23 +365,33 @@ fn synchronize_remote_state(
             device_uuid,
             &command,
             &patch,
-            check_in.server_time,
+            check_in.server_time.max(Utc::now()),
             trusted_signing_keys,
             &security_state,
         )?;
         api.verify_patch_download(token, &patch)?;
+        if command.expires_at <= Utc::now() || patch.expires_at <= Utc::now() {
+            bail!("command expired while downloading its patch");
+        }
         let state = command_target_state(command.action)?;
-        persist_remote_state(&PersistedRemoteState {
-            device_uuid,
-            lock_state: LockState {
-                state,
-                reason: command.reason.clone(),
-                changed_at: check_in.server_time,
+        persist_remote_state(&SecuredRemoteState {
+            command_security: applied_security_state(
+                device_uuid,
+                &security_state,
+                &command,
+                &patch,
+            )?,
+            remote: PersistedRemoteState {
+                device_uuid,
+                lock_state: LockState {
+                    state,
+                    reason: command.reason.clone(),
+                    changed_at: check_in.server_time,
+                },
+                checked_at: Utc::now(),
+                server_time: check_in.server_time,
             },
-            checked_at: Utc::now(),
-            server_time: check_in.server_time,
-        })?;
-        persist_command_security_state(&applied_security_state(&security_state, &command, &patch))
+        })
     })();
     match result {
         Ok(()) => api.acknowledge(
@@ -363,29 +420,27 @@ fn refresh_remote_check_in(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error).context("read applied remote state"),
     };
-    let mut state: PersistedRemoteState =
+    let mut state: SecuredRemoteState =
         serde_json::from_slice(&bytes).context("decode applied remote state")?;
-    if state.device_uuid != device_uuid {
+    if state.remote.device_uuid != device_uuid {
         bail!("applied remote state belongs to another device");
     }
-    state.checked_at = Utc::now();
-    state.server_time = server_time;
+    state.remote.checked_at = Utc::now();
+    state.remote.server_time = server_time;
     persist_remote_state(&state)
 }
 
 fn load_command_security_state() -> anyhow::Result<CommandSecurityState> {
-    let path = data_dir()?.join("command-security.json");
+    let path = data_dir()?.join("remote-state.json");
     match fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).context("decode command replay state"),
+        Ok(bytes) => Ok(serde_json::from_slice::<SecuredRemoteState>(&bytes)
+            .context("decode command replay state")?
+            .command_security),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Ok(CommandSecurityState::default())
         }
         Err(error) => Err(error).context("read command replay state"),
     }
-}
-
-fn persist_command_security_state(state: &CommandSecurityState) -> anyhow::Result<()> {
-    write_json_safely(&data_dir()?.join("command-security.json"), state)
 }
 
 fn command_target_state(action: CommandAction) -> anyhow::Result<LockStateKind> {
@@ -400,33 +455,24 @@ fn command_target_state(action: CommandAction) -> anyhow::Result<LockStateKind> 
     }
 }
 
-fn persist_remote_state(state: &PersistedRemoteState) -> anyhow::Result<()> {
+#[derive(Serialize, Deserialize)]
+struct SecuredRemoteState {
+    #[serde(flatten)]
+    remote: PersistedRemoteState,
+    #[serde(default)]
+    command_security: CommandSecurityState,
+}
+
+fn persist_remote_state(state: &SecuredRemoteState) -> anyhow::Result<()> {
     write_json_safely(&data_dir()?.join("remote-state.json"), &state)
 }
 
 fn write_json_safely(path: &std::path::Path, value: &impl Serialize) -> anyhow::Result<()> {
-    let parent = path
-        .parent()
-        .context("state file has no parent directory")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("create state directory {}", parent.display()))?;
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(value)?)
-        .with_context(|| format!("write temporary state file {}", temporary.display()))?;
-    // `rename` replaces an existing file on Unix but not on Windows. The UI
-    // retains its in-memory state during this tiny replacement window.
-    if cfg!(windows) && path.exists() {
-        fs::remove_file(path)
-            .with_context(|| format!("replace existing state file {}", path.display()))?;
-    }
-    fs::rename(&temporary, path).with_context(|| {
-        format!(
-            "commit temporary state file {} to {}",
-            temporary.display(),
-            path.display()
-        )
-    })?;
-    Ok(())
+    emi_device_agent::state_store::write_json(
+        path,
+        value,
+        path.file_name().is_some_and(|name| name == "config.json"),
+    )
 }
 
 fn collect_health(device_id: Uuid) -> DeviceHealth {

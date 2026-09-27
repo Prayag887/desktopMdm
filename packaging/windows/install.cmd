@@ -15,10 +15,27 @@ set "INSTALL_EXIT=%ERRORLEVEL%"
 echo.
 if not "%INSTALL_EXIT%"=="0" (
   echo Installation FAILED with exit code %INSTALL_EXIT%.
-  echo Review the error shown above. Nothing has been reported as installed.
+  echo Review the error shown above. Some components may already be installed.
   pause
   exit /b %INSTALL_EXIT%
 )
-echo Installation completed successfully. You can close this window.
+rem Configure recovery only after the agent installer has succeeded.
+echo Disabling Windows Recovery Environment...
+reagentc /disable
+set "RECOVERY_EXIT=%ERRORLEVEL%"
+reagentc /info
+set "RECOVERY_INFO_EXIT=%ERRORLEVEL%"
+if not "%RECOVERY_EXIT%"=="0" (
+  echo Agent installed, but disabling Windows RE FAILED with exit code %RECOVERY_EXIT%.
+  pause
+  exit /b %RECOVERY_EXIT%
+)
+if not "%RECOVERY_INFO_EXIT%"=="0" (
+  echo Agent installed, but querying Windows RE FAILED with exit code %RECOVERY_INFO_EXIT%.
+  pause
+  exit /b %RECOVERY_INFO_EXIT%
+)
+echo Installation completed successfully. Windows RE has been disabled.
+echo An administrator can restore Windows RE with: reagentc /enable
 pause
 exit /b 0

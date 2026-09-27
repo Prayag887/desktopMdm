@@ -15,6 +15,8 @@ The target outcome is data protection and automatic restoration of management af
 | SSD is formatted or replaced | Existing data is erased; Autopilot can restore management because its registration identifies the device rather than the old disk. |
 | Motherboard is replaced, firmware is attacked, or the device stays offline | Management restoration is not guaranteed. Follow the asset-loss and hardware-replacement procedure. |
 
+**Installer choice:** use `install.ps1` or the Intune wrapper for this runbook. `install.cmd` disables WinRE and is incompatible with Autopilot Reset until `reagentc /enable` is run.
+
 No Windows agent can prevent a person with physical possession from destroying or erasing storage. Do not disable WinRE, sabotage reset, hide persistence, install a kernel hook, or deny an authorized administrator a recovery path.
 
 ## Responsibility boundary

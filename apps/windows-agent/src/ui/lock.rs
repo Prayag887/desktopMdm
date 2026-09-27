@@ -2,13 +2,14 @@
 
 use std::time::{Duration, Instant};
 
+use crate::recovery_service::{RecoveryRequest, RecoveryState};
 use chrono::Utc;
 use eframe::egui::{self, Color32, RichText};
-use emi_core::recovery::{parse_public_key_hex, verify_unlock, verify_unlock_word};
+use std::io::Write as _;
 use zeroize::Zeroize as _;
 
-use super::app::{DeviceApp, OWNER_PUBLIC_KEY_HEX, UNLOCK_WORD_HASH};
-use super::system::{read_remote_state, set_task_manager_disabled, write_last_counter};
+use super::app::DeviceApp;
+use super::system::{read_remote_state, set_task_manager_disabled};
 use crate::bluescreen::BluescreenSession;
 
 impl DeviceApp {
@@ -20,7 +21,7 @@ impl DeviceApp {
         context.request_repaint_after(Duration::from_millis(100));
         // One-shot on entering a lock: force fullscreen and always-on-top, and
         // disable Task Manager for this user (registry policy; re-enabled on
-        // unlock). No auto-close — the only exit is the unlock word.
+        // unlock). No auto-close — the in-session recovery uses a service-verified token.
         self.lock_started.get_or_insert_with(|| {
             context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
             context.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
@@ -104,50 +105,89 @@ impl DeviceApp {
         self.bluescreen.is_some() || self.enforced || self.manual_lock || self.remote_locked
     }
 
-    /// Verify an owner-signed unlock token against the embedded public key.
-    /// Fail-safe: any problem leaves the device locked. On success the token's
-    /// counter is persisted so it cannot be replayed. Returns true if released.
-    pub(crate) fn try_recovery_unlock(&mut self, context: &egui::Context) -> bool {
-        // Rate limit: stop live guessing of the word once attempts pile up.
+    /// Submit a token to the service. Only its protected receipt may release UI.
+    pub(crate) fn try_recovery_unlock(&mut self, _context: &egui::Context) -> bool {
+        if self.pending_recovery.is_some() {
+            return false;
+        }
         if let Some(until) = self.unlock_locked_until {
             if let Some(remaining) = until.checked_duration_since(Instant::now()) {
                 self.status = format!("Too many attempts. Wait {}s.", remaining.as_secs() + 1);
                 return false;
             }
         }
-        let input = self.recovery_input.trim().to_string();
-
-        // Unlock word: verified against a slow Argon2id hash (case-insensitive),
-        // never a plaintext compare — the word is not present in the binary.
-        if verify_unlock_word(&input.to_lowercase(), UNLOCK_WORD_HASH) {
-            self.unlock_released(context, "Device unlocked.");
-            return true;
+        let request = RecoveryRequest {
+            request_id: uuid::Uuid::new_v4(),
+            token: self.recovery_input.trim().to_string(),
+        };
+        if !request.token.starts_with(emi_core::recovery::TOKEN_PREFIX) || request.token.len() > 256
+        {
+            self.recovery_refused();
+            return false;
         }
+        let result = (|| -> anyhow::Result<()> {
+            let directory = self
+                .recovery_directory
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("missing state directory"))?;
+            // The installer creates this fixed file, owned by Administrators.
+            // Users may write bytes but cannot replace/delete it or write receipts.
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(directory.join("recovery-request.json"))?;
+            file.write_all(&serde_json::to_vec(&request)?)?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if result.is_ok() {
+            self.pending_recovery = Some((request.request_id, Instant::now()));
+            self.recovery_input.zeroize();
+            self.status = "Verifying recovery token with the local service…".into();
+        } else {
+            self.status =
+                "Recovery service unavailable. Sign in with the administrator recovery account."
+                    .into();
+        }
+        false
+    }
 
-        // Owner-signed token path.
-        if let Some(trusted) = parse_public_key_hex(OWNER_PUBLIC_KEY_HEX) {
-            if let Some(device) = self.device_id {
-                if let Ok(token) =
-                    verify_unlock(&input, &trusted, device, Utc::now(), self.last_counter)
-                {
-                    self.last_counter = token.counter;
-                    write_last_counter(token.counter);
+    pub(crate) fn poll_recovery_unlock(&mut self, context: &egui::Context) {
+        let Some((id, started)) = self.pending_recovery else {
+            return;
+        };
+        let state = self
+            .recovery_directory
+            .as_ref()
+            .and_then(|directory| std::fs::read(directory.join("recovery-state.json")).ok())
+            .and_then(|bytes| serde_json::from_slice::<RecoveryState>(&bytes).ok());
+        if let Some(receipt) = state.and_then(|state| state.receipt) {
+            if receipt.request_id == id && receipt.expires_at > Utc::now() {
+                self.pending_recovery = None;
+                if receipt.accepted {
                     self.unlock_released(context, "Device unlocked with a valid owner token.");
-                    return true;
+                } else {
+                    self.recovery_refused();
                 }
+                return;
             }
         }
+        if started.elapsed() > Duration::from_secs(30) {
+            self.pending_recovery = None;
+            self.status =
+                "Recovery service did not respond. Use the administrator recovery account.".into();
+        }
+    }
 
-        // Failure: count it and back off (5s, 10s, 20s … capped) after 5 tries.
-        self.unlock_fail_count += 1;
+    fn recovery_refused(&mut self) {
+        self.unlock_fail_count = self.unlock_fail_count.saturating_add(1);
         if self.unlock_fail_count >= 5 {
             let backoff = 5u64 << (self.unlock_fail_count - 5).min(5);
             self.unlock_locked_until = Some(Instant::now() + Duration::from_secs(backoff));
-            self.status = format!("Incorrect. Locked for {backoff}s.");
+            self.status = format!("Recovery token refused. Wait {backoff}s.");
         } else {
-            self.status = "Incorrect. Try again.".into();
+            self.status = "Recovery token refused.".into();
         }
-        false
     }
 
     fn unlock_released(&mut self, context: &egui::Context, message: &str) {
@@ -228,7 +268,7 @@ impl DeviceApp {
             .show(context, |ui| {
                 ui.visuals_mut().override_text_color = Some(Color32::WHITE);
                 // No Exit button in any mode. The only way out is typing the
-                // unlock word (or a valid signed token). No click-to-leave.
+                // recovery token (or a valid signed token). No click-to-leave.
                 ui.add_space(20.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let (banner, title, description) = lock_screen_copy(&self.remote_lock_reason);
@@ -255,19 +295,22 @@ impl DeviceApp {
                                 RichText::new("The physical keyboard is disabled.")
                                     .color(Color32::from_rgb(143, 198, 255)),
                             );
-                            ui.label("Type the unlock word to release this device.");
+                            ui.label("Type the recovery token to release this device.");
                         });
                     });
                     ui.add_space(24.0);
                     ui.separator();
                     ui.add_space(12.0);
-                    ui.heading("Enter the unlock word to continue");
+                    ui.heading("Enter the recovery token to continue");
+                    if let Some(device) = self.device_id {
+                        ui.label(format!("Device ID: {device}"));
+                    }
                     ui.label(
-                        "Type the unlock word using the on-screen keyboard below, \
+                        "Enter the owner-signed recovery token, \
                          then press Unlock.",
                     );
                     ui.add_space(8.0);
-                    // Black text on a light field so the typed word is readable
+                    // Black text on a light field so the token is readable
                     // despite the lock screen's white text override.
                     let field = ui
                         .scope(|ui| {
@@ -277,7 +320,7 @@ impl DeviceApp {
                                 egui::TextEdit::singleline(&mut *self.recovery_input)
                                     .desired_width(460.0)
                                     .char_limit(256)
-                                    .hint_text("unlock word"),
+                                    .hint_text("EMIU1-… recovery token"),
                             )
                         })
                         .inner;
@@ -304,10 +347,11 @@ impl DeviceApp {
                     if unlock.clicked() && self.try_recovery_unlock(context) {
                         return;
                     }
+                    ui.label(&self.status);
                     ui.small(
                         "The physical keyboard is fully disabled while locked; type the unlock \
-                         word with the on-screen keys above. Ctrl+Alt+Del and Win+L are OS-\
-                         protected. A restart just re-locks; the unlock word is the only exit.",
+                         token with the on-screen keys above. Ctrl+Alt+Del and Win+L are OS-\
+                         protected. Administrator sign-in remains available for recovery.",
                     );
                 });
             });

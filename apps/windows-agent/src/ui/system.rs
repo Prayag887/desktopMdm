@@ -62,24 +62,6 @@ pub(crate) fn read_remote_state() -> Option<PersistedRemoteState> {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
-fn counter_path() -> Option<PathBuf> {
-    std::env::var_os("PROGRAMDATA")
-        .map(|base| PathBuf::from(base).join("EmiDeviceAgent/unlock-counter.txt"))
-}
-
-/// Highest unlock-token counter already accepted. Rollback protection: a token
-/// must exceed this. Missing/unreadable file means "none seen yet". Backed by
-/// the tested `emi_core::recovery` persistence helpers.
-pub(crate) fn read_last_counter() -> u64 {
-    counter_path().map_or(0, |path| emi_core::recovery::read_counter(&path))
-}
-
-pub(crate) fn write_last_counter(counter: u64) {
-    if let Some(path) = counter_path() {
-        let _ = emi_core::recovery::record_counter(&path, counter);
-    }
-}
-
 /// Enable or disable Task Manager for the current user via the documented
 /// `DisableTaskMgr` policy value in the user's own HKCU hive. No elevation is
 /// needed (the app runs as this user), it works on Windows Home, and Windows

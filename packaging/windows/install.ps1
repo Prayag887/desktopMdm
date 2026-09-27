@@ -2,9 +2,11 @@
 [CmdletBinding()]
 param(
   [switch]$SkipWingetBootstrap,
+  [switch]$SkipUiLaunch,
   [string]$InstallDir = "$env:ProgramFiles\EmiDeviceAgent",
   [UInt64]$CommandSigningKeyId = 0,
-  [string]$CommandSigningPublicKey = ''
+  [string]$CommandSigningPublicKey = '',
+  [string]$RecoveryPublicKeyHex = ''
 )
 $ErrorActionPreference = 'Stop'
 $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
@@ -24,9 +26,25 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $dataDir = Join-Path $env:ProgramData 'EmiDeviceAgent'
+if ([string]::IsNullOrWhiteSpace($RecoveryPublicKeyHex)) {
+  $bundledRecoveryKey = Join-Path $PSScriptRoot 'recovery-public-key.hex'
+  if (Test-Path -LiteralPath $bundledRecoveryKey -PathType Leaf) {
+    $RecoveryPublicKeyHex = (Get-Content -LiteralPath $bundledRecoveryKey -Raw).Trim()
+  }
+}
+if ($RecoveryPublicKeyHex -and ($RecoveryPublicKeyHex -notmatch '^[A-Fa-f0-9]{64}$' -or $RecoveryPublicKeyHex -eq 'ac1473ba71d2cd322163ccc8a8f64e1226cfcb815bfc270cbe7417f16d8ae7ba')) {
+  throw 'A non-lab 32-byte recovery public key is required.'
+}
 if (($CommandSigningKeyId -eq 0) -ne ([string]::IsNullOrWhiteSpace($CommandSigningPublicKey))) {
   throw 'CommandSigningKeyId and CommandSigningPublicKey must be supplied together; key ID must be nonzero.'
 }
+
+# Validate Ed25519 material before stopping or changing an existing installation.
+$keyCheckArgs = @('validate-public-keys')
+if ($CommandSigningPublicKey) { $keyCheckArgs += @('--command-public-key', $CommandSigningPublicKey) }
+if ($RecoveryPublicKeyHex) { $keyCheckArgs += @('--recovery-public-key-hex', $RecoveryPublicKeyHex) }
+& $exe @keyCheckArgs
+if ($LASTEXITCODE -ne 0) { throw 'Invalid deployment public keys; installation was not modified.' }
 
 # --- Stop and REMOVE any previous instance so files are not locked -----------
 Get-Process -Name 'emi-device-ui', 'emi-device-agent' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -36,20 +54,18 @@ if (Get-Service EmiDeviceAgent -ErrorAction SilentlyContinue) {
 }
 Start-Sleep -Seconds 1
 
-# --- Clear any stale, over-restricted ProgramData state ----------------------
-# A prior install may have left config.json with ACLs the agent cannot read;
-# reset ownership/inheritance so `init` starts clean.
-if (Test-Path $dataDir) {
-  takeown /f $dataDir /r /d y 2>$null | Out-Null
-  icacls.exe $dataDir /reset /t /c /q 2>$null | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "Could not reset permissions on '$dataDir' (icacls exit $LASTEXITCODE)."
-  }
-  icacls.exe $dataDir /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /t /c /q | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "Could not grant SYSTEM and Administrators access to '$dataDir' (icacls exit $LASTEXITCODE)."
-  }
+# Establish exact ACLs before writing credentials or exposing the recovery mailbox.
+# Do not use icacls /reset: it can temporarily expose existing bearer tokens.
+New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+. (Join-Path $PSScriptRoot 'Set-EmiStateAcl.ps1')
+Set-EmiAcl $dataDir
+Get-ChildItem -LiteralPath $dataDir -Force | ForEach-Object {
+  if ($_.PSIsContainer) { throw 'Unexpected directory in agent state; inspect it before upgrading.' }
+  Set-EmiAcl $_.FullName -Private:($_.Name -like 'config*')
 }
+$mailbox = Join-Path $dataDir 'recovery-request.json'
+[IO.File]::WriteAllText($mailbox, '')
+Set-EmiAcl $mailbox -Mailbox $true
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item $exe (Join-Path $InstallDir 'emi-device-agent.exe') -Force
@@ -79,6 +95,12 @@ if ($CommandSigningKeyId -ne 0) {
     throw "Command signing key configuration failed (exit $trustExit): $($trustOutput -join [Environment]::NewLine)"
   }
 }
+if (-not [string]::IsNullOrWhiteSpace($RecoveryPublicKeyHex)) {
+  & $agent trust-recovery-key --public-key-hex $RecoveryPublicKeyHex
+  if ($LASTEXITCODE -ne 0) { throw 'Recovery public-key provisioning failed.' }
+} elseif (-not (Test-Path -LiteralPath (Join-Path $dataDir 'recovery-state.json'))) {
+  Write-Warning 'Offline token recovery is not provisioned. Keep the administrator recovery account available.'
+}
 & $agent enroll
 if ($LASTEXITCODE -ne 0) {
   Write-Warning 'Enrollment is pending. Create a PENDING Device Agent for this BIOS serial in the admin panel; the service retries every five minutes.'
@@ -86,14 +108,10 @@ if ($LASTEXITCODE -ne 0) {
 & $agent run --once
 if ($LASTEXITCODE -ne 0) { Write-Warning "Initial health snapshot failed (exit $LASTEXITCODE); continuing." }
 
-# Tamper hardening: SYSTEM/Administrators full, standard users read-only.
-icacls.exe $dataDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' /T | Out-Null
-# The bearer token is service-only. UI-safe enrollment metadata is separately
-# written to ui-config.json, so standard users never need config.json access.
-$privateConfig = Join-Path $dataDir 'config.json'
-if (Test-Path $privateConfig) {
-  icacls.exe $privateConfig /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
-}
+# State replacements inherit read-only access; config temporaries are protected
+# by the agent before any credentials are written. The mailbox is the sole
+# user-writable file and does not grant users delete/replace/ACL rights.
+Set-EmiAcl (Join-Path $dataDir 'config.json') -Private $true
 
 # --- Automatic boot service --------------------------------------------------
 # New-Service handles the spaced binary path that sc.exe rejects (exit 1639).
@@ -123,13 +141,19 @@ $shortcut.Description = 'EMI desktop companion'
 $shortcut.Save()
 
 # All-users logon scheduled task (fires for every account incl. admins; unlike
-# the StartUp folder it cannot be skipped with Shift). Unlock any session with
-# the on-screen word.
+# the StartUp folder it cannot be skipped with Shift). Recovery tokens are
+# verified by the service; administrator sign-in remains available.
 $lockAction = New-ScheduledTaskAction -Execute $uiPath
 $lockTrigger = New-ScheduledTaskTrigger -AtLogOn
 $lockPrincipal = New-ScheduledTaskPrincipal -GroupId 'S-1-1-0'
 $lockSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 Register-ScheduledTask -TaskName 'EmiDeviceLockAll' -Action $lockAction -Trigger $lockTrigger -Principal $lockPrincipal -Settings $lockSettings -Force | Out-Null
 
-Start-Process $uiPath
-Write-Host 'EMI desktop companion installed and set to auto-launch on every login.' -ForegroundColor Green
+Write-Host 'EMI agent service installed; desktop companion is set to auto-launch on login.' -ForegroundColor Green
+if (-not $SkipUiLaunch) {
+  . (Join-Path $PSScriptRoot 'Start-EmiCompanion.ps1')
+  [void](Start-EmiCompanion -UiPath $uiPath)
+}
+# Optional bootstrap/enrollment/interactive-launch failures do not override the
+# verified service installation. Mandatory failures above still throw.
+exit 0

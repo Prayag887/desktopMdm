@@ -16,6 +16,7 @@ thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+zeroize = "1.9"
 rand = "0.8"
 serde_json.workspace = true
 tempfile = "3"

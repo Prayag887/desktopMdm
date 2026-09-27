@@ -35,7 +35,7 @@ Use these Intune Win32 app settings:
 | Setting | Value |
 |---|---|
 | Install behavior | System |
-| Install command | `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\intune\Install-Intune.ps1 -SkipWingetBootstrap -CommandSigningKeyId <id> -CommandSigningPublicKey "<base64-public-key>"` |
+| Install command | `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\intune\Install-Intune.ps1 -SkipWingetBootstrap -CommandSigningKeyId <id> -CommandSigningPublicKey "<base64-public-key>" -RecoveryPublicKeyHex "<owner-public-hex>"` |
 | Uninstall command | `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\intune\Uninstall-Intune.ps1` |
 | Restart behavior | App install may force a device restart: No |
 | Assignment | Required, device group |
@@ -69,3 +69,5 @@ BitLocker recovery keys should be escrowed to Microsoft Entra ID before requirin
 Run `Test-AutopilotDfciPrerequisites.ps1` as a read-only inventory script. `-ExitWhenNotReady` returns exit code 1 when local prerequisite evidence is incomplete. A passing result is not a DFCI-support guarantee: validate the exact device model and OEM/CSP Autopilot registration against current Microsoft and manufacturer support documentation.
 
 For reset recovery, register company-owned hardware with Windows Autopilot, use an Enrollment Status Page, and make this Win32 app required. A wiped disk does not retain this app; Autopilot and Intune reinstall it after supported provisioning. The one-time EMI enrollment limitation above must be resolved before the reinstalled agent can check in. BitLocker protects existing data on a removed SSD but cannot prevent an owner of the physical media from erasing it.
+
+See [production hardening](../../../docs/production-hardening.md) for LAPS, App Control rollout, code signing, and recovery-key custody.

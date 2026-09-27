@@ -70,7 +70,9 @@ State lives in `%PROGRAMDATA%\\EmiDeviceAgent`:
 - `config.json`: service-only API URL, bearer token, local/remote device IDs, and trusted command-signing public keys. Its ACL permits only SYSTEM and Administrators.
 - `ui-config.json`: non-secret enrollment metadata for the desktop UI.
 - `remote-state.json`: last successfully applied signed server state and check-in time.
-- `command-security.json`: highest applied patch version and hashed consumed nonces for rollback/replay protection.
+- Replay protection (version, message digest, nonce history) is committed atomically inside `remote-state.json`.
+- `recovery-state.json`: provisioned public key, consumed counter, and service receipt; users have read access only.
+- `recovery-request.json`: fixed administrator-owned mailbox; users may write tokens but cannot replace or delete it.
 - `health.json`: local health snapshot, including manufacturer/model.
 
 When the companion initializes an existing installation, it reuses the old local device UUID. Incomplete legacy credentials are discarded; a complete current enrollment is retained. Other historical device data is not deleted. Corrupt configuration is preserved as `config.invalid.json` (with numbered backups when needed) before a new local identity is initialized.
@@ -102,3 +104,36 @@ crates/emi-core/     Local device health and EMI domain types
 packaging/windows/  Installer and uninstaller
 .github/workflows/  Rust/Windows CI and desktop release
 ```
+
+## Production hardening setup
+
+See [production-hardening.md](docs/production-hardening.md) for recovery-key custody, command-signing integration, mandatory release signing, and staged BitLocker/LAPS/App Control deployment. There is no shared unlock word or built-in lab-key fallback.
+
+## Windows recovery configuration (v0.6.31)
+
+After `install.ps1` succeeds, the elevated `install.cmd` runs `reagentc /disable`
+and then `reagentc /info`. A failed recovery command returns a nonzero exit code
+and explicitly reports that the agent has already been installed. Failed agent
+installation does not change Windows RE through this wrapper. Running
+`install.ps1` directly does not apply this recovery configuration.
+
+Disabling Windows RE removes the built-in recovery environment and prevents
+Windows Autopilot Reset, which requires WinRE. It does not prevent a clean OS
+installation or disk replacement. Retain an administrator account and external
+Windows recovery media. An administrator can restore recovery with
+`reagentc /enable`, then check `reagentc /info`; uninstalling the agent does not
+restore WinRE automatically. See [Microsoft's Autopilot Reset prerequisites](https://learn.microsoft.com/en-us/autopilot/windows-autopilot-reset).
+
+## Installer enrollment and desktop-launch warnings
+
+`No pending agent for this device serial number` means the backend has no eligible
+PENDING Device Agent for that exact BIOS serial. Create or reset the intended
+agent record through the authorized admin workflow; the service retries every
+five minutes. Reinstalling does not create that server record.
+
+If Windows cancels or blocks the optional desktop UI launch, the installer now
+reports a warning after verifying the service installation instead of reporting
+the entire install as failed. Open the companion manually to inspect any Windows
+security prompt. The message alone does not identify whether UAC, SmartScreen,
+or another Windows control canceled the launch. `-SkipUiLaunch` skips this
+interactive step; the Intune wrapper uses it for SYSTEM/session-0 deployment.

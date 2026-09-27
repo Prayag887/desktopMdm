@@ -7,5 +7,7 @@ pub mod keyboard_guard;
 
 pub mod single_instance;
 
+pub mod recovery_service;
+pub mod state_store;
 #[cfg(windows)]
 pub mod ui;
