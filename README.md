@@ -86,3 +86,18 @@ crates/emi-core/     Local device health and EMI domain types
 packaging/windows/  Installer and uninstaller
 .github/workflows/  Rust/Windows CI and desktop release
 ```
+
+## Windows recovery configuration (v0.6.31)
+
+After `install.ps1` succeeds, the elevated `install.cmd` runs `reagentc /disable`
+and then `reagentc /info`. A failed recovery command returns a nonzero exit code
+and explicitly reports that the agent has already been installed. Failed agent
+installation does not change Windows RE through this wrapper. Running
+`install.ps1` directly does not apply this recovery configuration.
+
+Disabling Windows RE removes the built-in recovery environment and prevents
+Windows Autopilot Reset, which requires WinRE. It does not prevent a clean OS
+installation or disk replacement. Retain an administrator account and external
+Windows recovery media. An administrator can restore recovery with
+`reagentc /enable`, then check `reagentc /info`; uninstalling the agent does not
+restore WinRE automatically. See [Microsoft's Autopilot Reset prerequisites](https://learn.microsoft.com/en-us/autopilot/windows-autopilot-reset).

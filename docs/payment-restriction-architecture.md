@@ -1,5 +1,7 @@
 # Payment-restricted mode — architecture, threat model, and safety boundaries
 
+> **Installer exception, v0.6.31:** `install.cmd` now disables WinRE after successful installation. References below to untouched or available WinRE describe the restriction runtime, not the installer configuration. Built-in WinRE recovery and Autopilot Reset require an administrator to run `reagentc /enable` first. Keep a working administrator account and external recovery media.
+
 > Scope: authorized EMI device management on **company-owned** Windows PCs, with
 > customer consent captured at enrollment. This document describes a *safe,
 > reversible* design and separates a **lab-safe prototype** (in this repo) from
