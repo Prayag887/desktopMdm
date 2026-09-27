@@ -48,6 +48,73 @@ fn desktop_cli_offers_device_enrollment() {
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(help.contains("enroll"));
     assert!(help.contains("init"));
+    assert!(help.contains("trust-command-key"));
+}
+
+#[test]
+fn trusted_command_key_update_preserves_identity_and_enrollment() {
+    let home = tempfile::tempdir().unwrap();
+    let directory = home.path().join("EmiDeviceAgent");
+    fs::create_dir(&directory).unwrap();
+    let device_id = "6fa459ea-ee8a-3ca4-894e-db77e160355e";
+    let remote_id = "a8098c1a-f86e-11da-bd1a-00112444be1e";
+    fs::write(
+        directory.join("config.json"),
+        format!(r#"{{"device_id":"{device_id}","api_base":"https://emi.example","agent_token":"secret-token","remote_device_id":"{remote_id}"}}"#),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_emi-device-agent"))
+        .env("PROGRAMDATA", home.path())
+        .env("TMPDIR", home.path())
+        .env("TMP", home.path())
+        .env("TEMP", home.path())
+        .args([
+            "trust-command-key",
+            "--key-id",
+            "42",
+            "--public-key",
+            "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["device_id"], device_id);
+    assert_eq!(config["remote_device_id"], remote_id);
+    assert_eq!(config["agent_token"], "secret-token");
+    assert_eq!(config["api_base"], "https://emi.example");
+    assert_eq!(
+        config["trusted_command_signing_keys"]["42"],
+        "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk="
+    );
+}
+
+#[test]
+fn invalid_trusted_key_does_not_modify_existing_config() {
+    let home = tempfile::tempdir().unwrap();
+    let directory = home.path().join("EmiDeviceAgent");
+    fs::create_dir(&directory).unwrap();
+    let path = directory.join("config.json");
+    let original = r#"{"device_id":"6fa459ea-ee8a-3ca4-894e-db77e160355e","api_base":"https://emi.example","agent_token":"secret-token","remote_device_id":"a8098c1a-f86e-11da-bd1a-00112444be1e"}"#;
+    fs::write(&path, original).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_emi-device-agent"))
+        .env("PROGRAMDATA", home.path())
+        .args([
+            "trust-command-key",
+            "--key-id",
+            "42",
+            "--public-key",
+            "invalid",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(fs::read_to_string(path).unwrap(), original);
 }
 
 #[test]

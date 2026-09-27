@@ -10,8 +10,8 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::system::{
-    current_user_is_admin, launched_as_user_shell, read_device_id, read_health, read_last_counter,
-    read_remote_state, service_is_running,
+    current_user_is_admin, launched_as_user_shell, read_device_id, read_health, read_remote_state,
+    service_is_running,
 };
 use crate::bluescreen::BluescreenSession;
 
@@ -37,19 +37,6 @@ impl BiosPasswordAction {
     }
 }
 
-/// Trusted owner public key (Ed25519, hex). The matching SIGNING key stays
-/// offline with the owner and mints unlock tokens; only its holder can release a
-/// device. Replace this LAB key with your own from
-/// `cargo run --example keygen -p emi-core` before production. If it is not a
-/// valid key, token recovery is disabled and only admin/WinRE recovery works.
-pub(crate) const OWNER_PUBLIC_KEY_HEX: &str =
-    "ac1473ba71d2cd322163ccc8a8f64e1226cfcb815bfc270cbe7417f16d8ae7ba";
-
-/// Argon2id hash of the unlock word (case-insensitive). The plaintext word is
-/// NOT stored — `strings`/memory inspection only reveal this slow salted hash.
-/// Regenerate with `cargo run --example hash-word -p emi-core -- <word>`.
-pub(crate) const UNLOCK_WORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$Mdla+Ww3AP3Pto1BvS9hYA$LJMhBSc74442jY/70O0oEXn+b9Uzu07tguj2Hin1PIc";
-
 // A UI state bag; a state machine would be overkill for a demo panel.
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct DeviceApp {
@@ -73,6 +60,7 @@ pub(crate) struct DeviceApp {
     pub(crate) recovery_input: Zeroizing<String>,
     pub(crate) recovery_focused: bool,
     pub(crate) enforced: bool,
+    pub(crate) administrator: bool,
     pub(crate) lock_started: Option<Instant>,
     pub(crate) manual_lock: bool,
     pub(crate) remote_locked: bool,
@@ -80,11 +68,12 @@ pub(crate) struct DeviceApp {
     pub(crate) last_remote_refresh: Instant,
     pub(crate) remote_unlock_override_at: Option<DateTime<Utc>>,
     pub(crate) device_id: Option<Uuid>,
-    pub(crate) last_counter: u64,
+    pub(crate) recovery_directory: Option<std::path::PathBuf>,
+    pub(crate) pending_recovery: Option<(Uuid, Instant)>,
     /// Manual override: block the keyboard even when no lock screen is showing.
     pub(crate) keyboard_disabled: bool,
     /// Consecutive failed unlock attempts, and a lockout deadline, to stop live
-    /// guessing of the unlock word.
+    /// repeated invalid recovery submissions.
     pub(crate) unlock_fail_count: u32,
     pub(crate) unlock_locked_until: Option<Instant>,
 }
@@ -92,14 +81,15 @@ pub(crate) struct DeviceApp {
 impl DeviceApp {
     pub(crate) fn load() -> Self {
         let is_admin = current_user_is_admin();
-        // Enforced (unbreakable) mode: launched as the enrolled user's shell AND
+        // Enforced mode: launched as the enrolled user's shell AND
         // not an administrator. Admins and normal launches stay in the reversible
         // demo, keeping an Exit button.
         let enforced = !is_admin && launched_as_user_shell();
         let remote_state = read_remote_state();
-        let remote_locked = remote_state
-            .as_ref()
-            .is_some_and(|state| state.lock_state.state.is_locked());
+        let remote_locked = !is_admin
+            && remote_state
+                .as_ref()
+                .is_some_and(|state| state.lock_state.state.is_locked());
         let remote_lock_reason = remote_state
             .as_ref()
             .map_or_else(String::new, |state| state.lock_state.reason.clone());
@@ -128,6 +118,7 @@ impl DeviceApp {
             recovery_input: Zeroizing::new(String::new()),
             recovery_focused: false,
             enforced,
+            administrator: is_admin,
             lock_started: None,
             manual_lock: false,
             remote_locked,
@@ -135,7 +126,9 @@ impl DeviceApp {
             last_remote_refresh: Instant::now(),
             remote_unlock_override_at: None,
             device_id: read_device_id(),
-            last_counter: read_last_counter(),
+            recovery_directory: std::env::var_os("PROGRAMDATA")
+                .map(|base| std::path::PathBuf::from(base).join("EmiDeviceAgent")),
+            pending_recovery: None,
             keyboard_disabled: false,
             unlock_fail_count: 0,
             unlock_locked_until: None,
@@ -164,6 +157,9 @@ impl DeviceApp {
     }
 
     fn sync_remote_lock_state(&mut self, context: &egui::Context) {
+        if self.administrator {
+            return;
+        }
         if self.last_remote_refresh.elapsed() < Duration::from_secs(2) {
             return;
         }
@@ -191,6 +187,7 @@ impl DeviceApp {
 
 impl eframe::App for DeviceApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_recovery_unlock(context);
         self.sync_remote_lock_state(context);
         let locked = self.blue_screen_active(context);
         // Drive the global keyboard hook: block the keyboard while a lock screen
@@ -445,83 +442,55 @@ mod tests {
         });
     }
 
-    // Mints a token with the LAB signing key that matches OWNER_PUBLIC_KEY_HEX.
-    // Owner tools do this off-device; the test mirrors them.
-    fn lab_token(device: Uuid, counter: u64) -> String {
-        use chrono::Utc;
-        use ed25519_dalek::SigningKey;
-        use emi_core::recovery::UnlockToken;
-        let hex = "5883eb5073327073c82d56cd745a95c9e1e9ef50f7f3dcb28a3da473ee387418";
-        let mut bytes = [0u8; 32];
-        for (index, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
-            bytes[index] = u8::from_str_radix(std::str::from_utf8(chunk).unwrap(), 16).unwrap();
-        }
+    #[test]
+    fn submitting_a_token_does_not_unlock_without_service_receipt() {
+        let mut app = DeviceApp::load();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("recovery-request.json"), "").unwrap();
+        app.recovery_directory = Some(dir.path().to_path_buf());
+        app.enforced = true;
+        app.recovery_input.push_str("EMIU1-test");
+        let context = egui::Context::default();
+        assert!(!app.try_recovery_unlock(&context));
+        app.poll_recovery_unlock(&context);
+        assert!(app.enforced);
+        assert!(app.pending_recovery.is_some());
+    }
+
+    #[test]
+    fn valid_service_receipt_releases_and_clears_token() {
+        use emi_core::recovery::{SigningKey, UnlockToken};
+        let mut app = DeviceApp::load();
+        let dir = tempfile::tempdir().unwrap();
+        let key = SigningKey::from_bytes(&[37; 32]);
+        let public =
+            key.verifying_key()
+                .to_bytes()
+                .iter()
+                .fold(String::new(), |mut output, byte| {
+                    use std::fmt::Write as _;
+                    write!(output, "{byte:02x}").unwrap();
+                    output
+                });
+        crate::recovery_service::provision(dir.path(), &public).unwrap();
+        std::fs::write(dir.path().join("recovery-request.json"), "").unwrap();
+        app.recovery_directory = Some(dir.path().to_path_buf());
+        let device = Uuid::new_v4();
+        app.device_id = Some(device);
+        app.enforced = true;
         let token = UnlockToken {
             device_id: device,
-            counter,
-            expires_unix: (Utc::now() + chrono::Duration::hours(1)).timestamp(),
-        };
-        token.sign_to_string(&SigningKey::from_bytes(&bytes))
-    }
-
-    #[test]
-    fn a_valid_owner_token_ends_restriction_and_zeroizes_input() {
-        let mut app = DeviceApp::load();
-        app.bluescreen = Some(BluescreenSession::start(std::net::Ipv4Addr::LOCALHOST).unwrap());
-        let device = Uuid::new_v4();
-        app.device_id = Some(device);
-        app.last_counter = 0;
-        app.recovery_input.push_str(&lab_token(device, 1));
+            counter: 1,
+            expires_unix: (Utc::now() + chrono::Duration::minutes(5)).timestamp(),
+        }
+        .sign_to_string(&key);
+        app.recovery_input.push_str(&token);
         let context = egui::Context::default();
-        assert!(app.try_recovery_unlock(&context));
-        assert!(
-            app.bluescreen.is_none(),
-            "valid token must release the device"
-        );
-        assert_eq!(
-            app.last_counter, 1,
-            "counter advances for rollback protection"
-        );
-        assert!(
-            app.recovery_input.is_empty(),
-            "token must be cleared on exit"
-        );
-    }
-
-    #[test]
-    fn a_token_for_another_device_is_refused() {
-        let mut app = DeviceApp::load();
-        app.enforced = true;
-        app.device_id = Some(Uuid::new_v4());
-        app.recovery_input.push_str(&lab_token(Uuid::new_v4(), 1));
-        let context = egui::Context::default();
-        assert!(
-            !app.try_recovery_unlock(&context),
-            "wrong-device token refused"
-        );
-        assert!(app.enforced, "device stays locked on refusal");
-    }
-
-    #[test]
-    fn enforced_mode_stays_active_without_a_session_and_releases_by_token() {
-        let mut app = DeviceApp::load();
-        app.enforced = true;
-        let device = Uuid::new_v4();
-        app.device_id = Some(device);
-        app.last_counter = 0;
-        let context = egui::Context::default();
-        // Locked with no QR / network session at all.
-        assert!(app.bluescreen.is_none());
-        assert!(app.blue_screen_active(&context));
-        // Renders (no Exit button) without panicking despite no session/QR.
-        let output = context.run(egui::RawInput::default(), |context| {
-            app.render_blue_screen(context);
-        });
-        assert!(!output.shapes.is_empty());
-        // A signed owner token is the in-session release path.
-        app.recovery_input.push_str(&lab_token(device, 1));
-        assert!(app.try_recovery_unlock(&context));
+        assert!(!app.try_recovery_unlock(&context));
+        crate::recovery_service::process(dir.path(), device, Utc::now()).unwrap();
+        app.poll_recovery_unlock(&context);
         assert!(!app.enforced);
-        assert!(!app.blue_screen_active(&context));
+        assert!(app.recovery_input.is_empty());
+        assert!(app.pending_recovery.is_none());
     }
 }

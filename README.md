@@ -2,17 +2,32 @@
 
 A Windows device agent written in Rust with a native egui/eframe GUI. It enrolls against the YajTech EMI admin API and applies administrator-issued lock state on the managed PC.
 
-## What remains
+## What is implemented
 
 - Native desktop window: local device identity, operating system, storage, battery, Secure Boot status, and manufacturer detection.
 - BIOS administrator-password workflow with masked current/new/confirmation fields, OEM adapter download progress, manufacturer/model detection, and elevated set/change actions for supported Dell, HP, Lenovo, and ASUS firmware interfaces. Acer and every other UEFI laptop can be restarted directly into firmware settings from the same screen.
 - Administrator-controlled payment restriction screen driven by the documented Device Agent API.
-- Automatic enrollment retry, immediate boot/resume check-in, 60-second heartbeats, pending-command fetch, patch checksum validation, and success/failure acknowledgement.
+- Automatic enrollment retry, immediate boot/resume check-in, 60-second heartbeats, pending-command fetch, fail-closed Ed25519 verification, rollback/replay protection, patch checksum validation, and success/failure acknowledgement.
 - Windows companion service that persists the last confirmed remote state so a restart or temporary outage cannot silently change the administrator's decision.
 - Local device/EMI domain types for future desktop workflows.
 - Administrator installer/uninstaller and Windows builds in GitHub Actions.
 
 Payment and customer administration remain in the hosted admin product. BIOS password management is local-only, requires UAC approval, and is enabled only when the detected model exposes a documented OEM interface. The app remains uninstallable by an authorized administrator.
+
+## Enterprise anti-theft deployment
+
+This repository provides the Windows agent and its administrator-controlled restriction state. It does **not** make a Windows program undeletable, survive a bare-metal disk image by itself, prevent an SSD owner from formatting the media, or enroll a device into a Microsoft tenant. Those outcomes require an organization-owned deployment stack:
+
+- Register the motherboard/device identity with Windows Autopilot, preferably through the OEM or reseller. Registration and an assigned deployment profile are prerequisites for organizational provisioning to return after Windows Setup or a supported reset.
+- Enroll the device in Microsoft Intune and assign this agent as a **Required** Win32 app in SYSTEM context. A detection rule must verify the installed version and service, so Intune offers the package again when it is missing.
+- On supported, OEM-enabled hardware, use DFCI policy to manage permitted UEFI settings such as external boot. DFCI is not available on every Dell, ASUS, Acer, or other model and cannot be emulated safely by this application.
+- Require TPM 2.0, Secure Boot, and BitLocker with recovery keys escrowed to the organization. BitLocker protects data on a removed SSD; it cannot prevent the physical owner from erasing or replacing that SSD.
+
+After a standard reset, the expected recovery chain is Windows OOBE → Autopilot tenant recognition → Microsoft Entra/Intune enrollment → required-app installation → agent enrollment/check-in. The current API's one-time enrollment rule blocks that last step after a clean reinstall unless an administrator can reset/reissue enrollment for the asset; see the [Intune deployment guide](packaging/windows/intune/README.md). A completely offline installation, unsupported recovery image, motherboard replacement, or deliberate hardware attack can also break the chain. See [Enterprise anti-theft deployment](docs/enterprise-antitheft-deployment.md) for prerequisites, rollout, recovery, and acceptance tests.
+
+For an existing organization-owned laptop, the [Intune deployment guide](packaging/windows/intune/README.md) includes an Autopilot hardware-hash export helper and the tenant setup sequence for a Standard-user profile, Required-app installation, BitLocker recovery-key escrow, and compliance policy.
+
+The current Device Agent API has no separate `LOST` action. Until the server contract adds one, operators may use `LOCK` with a non-sensitive ownership/return message as the reason. The client must not infer theft from missed check-ins, and it must never transmit location or personal data that the API has not explicitly authorized.
 
 ## BIOS passwords
 
@@ -24,7 +39,7 @@ Firmware support is model-specific even within one brand. The app verifies that 
 
 Before installation, create the device in the admin system using the laptop's BIOS serial number, then create its **PENDING Device Agent**. The installer calls `/api/agent/enroll/`; the Windows service retries enrollment every five minutes if the pending record is not ready yet.
 
-Once enrolled, the service calls `/api/agent/check-in/` immediately on service startup and resume, and every 60 seconds. Pending commands are fetched from `/api/agent/patch-files/current/`, validated against command metadata, expiry, size, and SHA-256 checksum, persisted locally, and acknowledged only after application. `LOCK` restricts the UI; `UNLOCK`, `WARN`, and `RELEASE` remove the restriction. Remote `UNINSTALL` is deliberately refused and reported as failed because removal requires a local administrator.
+Once enrolled, the service calls `/api/agent/check-in/` immediately on service startup and resume, and every 60 seconds. Pending commands are fetched from `/api/agent/patch-files/current/`, verified with a provisioned Ed25519 admin key, validated against command metadata, expiry, monotonic version, nonce history, size, and SHA-256 checksum, persisted locally, and acknowledged only after application. `LOCK` restricts the UI; `UNLOCK`, `WARN`, and `RELEASE` remove the restriction. `LOCK` with reason `THEFT` uses explicit lost/stolen-device copy. Remote `UNINSTALL` is deliberately refused and reported as failed because removal requires a local administrator.
 
 There are no local lock/unlock buttons. The status page shows the server state, reason, managed device UUID, and last successful check-in. If the network is unavailable during boot, the last confirmed state remains active until the service reconnects.
 
@@ -38,7 +53,7 @@ For installation, open PowerShell as administrator in the extracted folder:
 .\\install.ps1
 ```
 
-The installer copies both binaries, reads the BIOS serial, enrolls with `https://emi-api.yajtech.com`, collects health, installs the automatic service, creates the UI startup shortcut, and opens the window. Enrollment uses the one-time pending-agent workflow documented by the API; no admin username or password is stored on the PC.
+The installer copies both binaries, reads the BIOS serial, enrolls with `https://emi-api.yajtech.com`, collects health, installs the automatic service, creates the UI startup shortcut, and opens the window. Enrollment uses the one-time pending-agent workflow documented by the API; no admin username or password is stored on the PC. Production deployment must also pass `-CommandSigningKeyId` and `-CommandSigningPublicKey`; without a trusted public key, remote state transitions deliberately fail closed.
 
 WinGet bootstrap downloads Microsoft Desktop App Installer only when WinGet is missing. For an offline install or when bootstrap is unwanted:
 
@@ -46,18 +61,21 @@ WinGet bootstrap downloads Microsoft Desktop App Installer only when WinGet is m
 .\\install.ps1 -SkipWingetBootstrap
 ```
 
-To uninstall, run `.\\uninstall.ps1` as administrator. Local data is retained for recovery.
+To uninstall, run `.\\uninstall.ps1` as administrator. Local data is retained for recovery. In an Intune deployment, first remove the device from the Required assignment or place it in an authorized retirement/exclusion group; otherwise Intune can reinstall the agent on its next evaluation.
 
 ## Local data and migration
 
 State lives in `%PROGRAMDATA%\\EmiDeviceAgent`:
 
-- `config.json`: service-only API URL, bearer token, and local/remote device IDs. Its ACL permits only SYSTEM and Administrators.
+- `config.json`: service-only API URL, bearer token, local/remote device IDs, and trusted command-signing public keys. Its ACL permits only SYSTEM and Administrators.
 - `ui-config.json`: non-secret enrollment metadata for the desktop UI.
-- `remote-state.json`: last successfully confirmed server lock state and check-in time.
+- `remote-state.json`: last successfully applied signed server state and check-in time.
+- Replay protection (version, message digest, nonce history) is committed atomically inside `remote-state.json`.
+- `recovery-state.json`: provisioned public key, consumed counter, and service receipt; users have read access only.
+- `recovery-request.json`: fixed administrator-owned mailbox; users may write tokens but cannot replace or delete it.
 - `health.json`: local health snapshot, including manufacturer/model.
 
-When the companion initializes an existing installation, it reuses the old local device UUID. Incomplete legacy credentials are discarded; a complete current enrollment is retained. Other historical device data is not deleted. Corrupt configuration returns an error instead of silently replacing an identity.
+When the companion initializes an existing installation, it reuses the old local device UUID. Incomplete legacy credentials are discarded; a complete current enrollment is retained. Other historical device data is not deleted. Corrupt configuration is preserved as `config.invalid.json` (with numbered backups when needed) before a new local identity is initialized.
 
 The desktop agent does not run a local Docker backend. An ignored old `.env`, if present, is unused by this app.
 
@@ -86,6 +104,10 @@ crates/emi-core/     Local device health and EMI domain types
 packaging/windows/  Installer and uninstaller
 .github/workflows/  Rust/Windows CI and desktop release
 ```
+
+## Production hardening setup
+
+See [production-hardening.md](docs/production-hardening.md) for recovery-key custody, command-signing integration, mandatory release signing, and staged BitLocker/LAPS/App Control deployment. There is no shared unlock word or built-in lab-key fallback.
 
 ## Windows recovery configuration (v0.6.31)
 
