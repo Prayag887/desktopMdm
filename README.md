@@ -109,10 +109,13 @@ packaging/windows/  Installer and uninstaller
 
 See [production-hardening.md](docs/production-hardening.md) for recovery-key custody, command-signing integration, mandatory release signing, and staged BitLocker/LAPS/App Control deployment. There is no shared unlock word or built-in lab-key fallback.
 
-## Windows recovery configuration (v0.6.31)
+## Windows recovery configuration (v0.6.32)
 
-After `install.ps1` succeeds, the elevated `install.cmd` runs `reagentc /disable`
-and then `reagentc /info`. A failed recovery command returns a nonzero exit code
+After `install.ps1` succeeds, the elevated `install.cmd` first exports the BCD
+store to `C:\bcd-backup`, then runs `reagentc /disable` and `reagentc /info`.
+It sets `recoveryenabled No` and `bootstatuspolicy IgnoreAllFailures` for both
+`{current}` and `{default}`. If the BCD export fails, recovery settings are not
+changed. A failed recovery or BCD command stops configuration with a nonzero exit code
 and explicitly reports that the agent has already been installed. Failed agent
 installation does not change Windows RE through this wrapper. Running
 `install.ps1` directly does not apply this recovery configuration.
@@ -122,7 +125,9 @@ Windows Autopilot Reset, which requires WinRE. It does not prevent a clean OS
 installation or disk replacement. Retain an administrator account and external
 Windows recovery media. An administrator can restore recovery with
 `reagentc /enable`, then check `reagentc /info`; uninstalling the agent does not
-restore WinRE automatically. See [Microsoft's Autopilot Reset prerequisites](https://learn.microsoft.com/en-us/autopilot/windows-autopilot-reset).
+restore WinRE automatically. The BCD settings are separate from WinRE; enabling
+WinRE alone does not undo them. The pre-change BCD store is saved at
+`C:\bcd-backup` for administrator recovery. See [Microsoft's Autopilot Reset prerequisites](https://learn.microsoft.com/en-us/autopilot/windows-autopilot-reset).
 
 ## Installer enrollment and desktop-launch warnings
 

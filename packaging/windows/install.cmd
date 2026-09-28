@@ -20,6 +20,11 @@ if not "%INSTALL_EXIT%"=="0" (
   exit /b %INSTALL_EXIT%
 )
 rem Configure recovery only after the agent installer has succeeded.
+:: 1. Back up BCD first
+bcdedit /export C:\bcd-backup
+if errorlevel 1 goto :bcd_failed
+
+:: 2. Disable Windows Recovery Environment
 echo Disabling Windows Recovery Environment...
 reagentc /disable
 set "RECOVERY_EXIT=%ERRORLEVEL%"
@@ -35,7 +40,27 @@ if not "%RECOVERY_INFO_EXIT%"=="0" (
   pause
   exit /b %RECOVERY_INFO_EXIT%
 )
-echo Installation completed successfully. Windows RE has been disabled.
+:: 3. Disable boot recovery
+bcdedit /set {current} recoveryenabled No
+if errorlevel 1 goto :bcd_failed
+bcdedit /set {default} recoveryenabled No
+if errorlevel 1 goto :bcd_failed
+
+:: 4. Prevent failed boots from automatically entering recovery
+bcdedit /set {current} bootstatuspolicy IgnoreAllFailures
+if errorlevel 1 goto :bcd_failed
+bcdedit /set {default} bootstatuspolicy IgnoreAllFailures
+if errorlevel 1 goto :bcd_failed
+
+echo Installation completed successfully. Windows RE and automatic boot recovery have been disabled.
+echo BCD backup: C:\bcd-backup
 echo An administrator can restore Windows RE with: reagentc /enable
 pause
 exit /b 0
+
+:bcd_failed
+set "BCD_EXIT=%ERRORLEVEL%"
+echo Agent installed, but BCD configuration FAILED with exit code %BCD_EXIT%.
+echo Review the error above. Recovery configuration may be incomplete.
+pause
+exit /b %BCD_EXIT%
