@@ -11,6 +11,21 @@ use uuid::Uuid;
 
 pub const DEFAULT_API_BASE: &str = "https://emi-api.yajtech.com";
 
+/// Non-secret API activity shown in the payment-restriction UI. Bearer tokens
+/// and response bodies are deliberately never persisted here.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ApiActivity {
+    pub recorded_at: DateTime<Utc>,
+    pub events: Vec<ApiActivityEvent>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ApiActivityEvent {
+    pub endpoint: String,
+    pub request: String,
+    pub response: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct EnrollRequest<'a> {
     device_serial_no: &'a str,

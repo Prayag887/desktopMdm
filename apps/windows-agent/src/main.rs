@@ -3,7 +3,8 @@ use chrono::Utc;
 use clap::{Parser, Subcommand};
 use emi_core::{BiosProvider, DeviceHealth};
 use emi_device_agent::agent_api::{
-    AgentApi, CommandAction, DEFAULT_API_BASE, LockState, LockStateKind, PersistedRemoteState,
+    AgentApi, ApiActivity, ApiActivityEvent, CommandAction, DEFAULT_API_BASE, LockState,
+    LockStateKind, PersistedRemoteState,
 };
 use emi_device_agent::command_security::{
     CommandSecurityState, applied_security_state, normalize_public_key, verify_command_patch,
@@ -244,13 +245,30 @@ fn enroll(server: &str) -> anyhow::Result<()> {
 
 fn enroll_config(config: &mut AgentConfig, server: &str) -> anyhow::Result<()> {
     let serial = hardware_serial_number()?;
-    let enrollment = AgentApi::new(server)?
-        .enroll(&serial, env!("CARGO_PKG_VERSION"))
-        .with_context(|| {
-            format!(
-                "enroll BIOS serial {serial}; first create its PENDING Device Agent in the admin panel"
-            )
-        })?;
+    let enrollment = match AgentApi::new(server)?.enroll(&serial, env!("CARGO_PKG_VERSION")) {
+        Ok(enrollment) => {
+            record_api_activity(
+                "/api/agent/enroll/",
+                format!(
+                    "device_serial_no={serial}; agent_version={}",
+                    env!("CARGO_PKG_VERSION")
+                ),
+                format!("success; device_uuid={}", enrollment.device_uuid),
+            );
+            enrollment
+        }
+        Err(error) => {
+            record_api_activity(
+                "/api/agent/enroll/",
+                format!(
+                    "device_serial_no={serial}; agent_version={}",
+                    env!("CARGO_PKG_VERSION")
+                ),
+                format!("error: {error}"),
+            );
+            return Err(error).with_context(|| format!("enroll BIOS serial {serial}; first create its PENDING Device Agent in the admin panel"));
+        }
+    };
     config.api_base = server.trim_end_matches('/').to_string();
     config.agent_token = Some(enrollment.token);
     config.remote_device_id = Some(enrollment.device_uuid);
@@ -273,9 +291,28 @@ fn enroll_config(config: &mut AgentConfig, server: &str) -> anyhow::Result<()> {
 fn check_or_enroll_config(config: &mut AgentConfig) -> anyhow::Result<()> {
     let serial = hardware_serial_number()?;
     let api = AgentApi::new(&config.api_base)?;
-    let enrollment = api
-        .check_enrollment(&serial)
-        .with_context(|| format!("check enrollment for BIOS serial {serial}"))?;
+    let enrollment = match api.check_enrollment(&serial) {
+        Ok(enrollment) => {
+            record_api_activity(
+                "/api/agent/check-enroll/",
+                format!("device_serial_no={serial}"),
+                format!(
+                    "enrolled={}; status={}",
+                    enrollment.enrolled, enrollment.status
+                ),
+            );
+            enrollment
+        }
+        Err(error) => {
+            record_api_activity(
+                "/api/agent/check-enroll/",
+                format!("device_serial_no={serial}"),
+                format!("error: {error}"),
+            );
+            return Err(error)
+                .with_context(|| format!("check enrollment for BIOS serial {serial}"));
+        }
+    };
     if enrollment.enrolled {
         if config.agent_token.is_none() || config.remote_device_id.is_none() {
             bail!(
@@ -396,7 +433,28 @@ fn synchronize_remote_state(
     trusted_signing_keys: &BTreeMap<u64, String>,
 ) -> anyhow::Result<()> {
     let _guard = emi_device_agent::state_store::lock(&data_dir()?, "command.lock")?;
-    let check_in = api.check_in(token, env!("CARGO_PKG_VERSION"))?;
+    let check_in = match api.check_in(token, env!("CARGO_PKG_VERSION")) {
+        Ok(check_in) => {
+            record_api_activity(
+                "/api/agent/check-in/",
+                format!("agent_version={}", env!("CARGO_PKG_VERSION")),
+                format!(
+                    "success; lock_state={:?}; pending_command={}",
+                    check_in.lock_state.state,
+                    check_in.pending_command.is_some()
+                ),
+            );
+            check_in
+        }
+        Err(error) => {
+            record_api_activity(
+                "/api/agent/check-in/",
+                format!("agent_version={}", env!("CARGO_PKG_VERSION")),
+                format!("error: {error}"),
+            );
+            return Err(error);
+        }
+    };
     let Some(command) = check_in.pending_command else {
         // A bare check-in state has no signature. It may refresh liveness but
         // must never change an already-applied security state; every state
@@ -514,6 +572,31 @@ struct SecuredRemoteState {
 
 fn persist_remote_state(state: &SecuredRemoteState) -> anyhow::Result<()> {
     write_json_safely(&data_dir()?.join("remote-state.json"), &state)
+}
+
+fn record_api_activity(endpoint: &str, request: String, response: String) {
+    const MAX_EVENTS: usize = 8;
+    let Ok(path) = data_dir().map(|directory| directory.join("api-activity.json")) else {
+        return;
+    };
+    let mut activity = fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ApiActivity>(&bytes).ok())
+        .unwrap_or(ApiActivity {
+            recorded_at: Utc::now(),
+            events: Vec::new(),
+        });
+    activity.recorded_at = Utc::now();
+    activity.events.push(ApiActivityEvent {
+        endpoint: endpoint.to_string(),
+        request,
+        response,
+    });
+    if activity.events.len() > MAX_EVENTS {
+        let excess = activity.events.len() - MAX_EVENTS;
+        activity.events.drain(..excess);
+    }
+    let _ = write_json_safely(&path, &activity);
 }
 
 fn write_json_safely(path: &std::path::Path, value: &impl Serialize) -> anyhow::Result<()> {

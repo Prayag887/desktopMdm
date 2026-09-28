@@ -16,8 +16,8 @@ use zeroize::{Zeroize as _, Zeroizing};
 
 use super::app::{BiosPasswordAction, DeviceApp, OperationEvent};
 use super::system::{
-    CREATE_NO_WINDOW, agent_path, bios_adapter_status, read_health, read_remote_state,
-    service_is_running,
+    CREATE_NO_WINDOW, agent_path, bios_adapter_status, read_api_activity, read_health,
+    read_remote_state, service_is_running,
 };
 
 fn provider_name(provider: BiosProvider) -> &'static str {
@@ -568,6 +568,18 @@ impl DeviceApp {
                 Color32::from_rgb(230, 180, 100),
                 "Waiting for enrollment and the first successful check-in.",
             );
+        }
+        if let Some(activity) = read_api_activity() {
+            ui.add_space(12.0);
+            ui.heading("Latest EMI API activity");
+            ui.small(format!("Recorded: {}", activity.recorded_at));
+            for event in activity.events {
+                ui.separator();
+                ui.monospace(event.endpoint);
+                ui.label(format!("Request: {}", event.request));
+                ui.label(format!("Response: {}", event.response));
+            }
+            ui.small("Bearer tokens and full response bodies are not displayed.");
         }
         ui.add_space(16.0);
         ui.label("There are no local lock or unlock controls. Use the admin panel to issue LOCK, UNLOCK, WARN, or RELEASE commands.");
