@@ -803,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "emi-core"
-version = "0.6.37"
+version = "0.6.38"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -821,7 +821,7 @@ dependencies = [
 
 [[package]]
 name = "emi-device-agent"
-version = "0.6.37"
+version = "0.6.38"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

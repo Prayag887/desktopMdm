@@ -16,8 +16,8 @@ use zeroize::{Zeroize as _, Zeroizing};
 
 use super::app::{BiosPasswordAction, DeviceApp, OperationEvent};
 use super::system::{
-    CREATE_NO_WINDOW, agent_path, bios_adapter_status, read_api_activity, read_health,
-    read_remote_state, service_is_running,
+    CREATE_NO_WINDOW, agent_path, bios_adapter_status, read_api_activity, read_enrollment_status,
+    read_health, read_remote_state, service_is_running,
 };
 
 fn provider_name(provider: BiosProvider) -> &'static str {
@@ -555,6 +555,31 @@ impl DeviceApp {
             },
         );
         ui.add_space(10.0);
+        if let Some(enrollment) = read_enrollment_status() {
+            ui.heading("Latest enrollment check");
+            ui.label(format!("BIOS serial: {}", enrollment.device_serial_no));
+            ui.label(format!("Checked: {}", enrollment.checked_at));
+            match enrollment.enrolled {
+                Some(enrolled) => {
+                    ui.label(format!(
+                        "Server response: enrolled={enrolled}; status={}",
+                        enrollment.status.as_deref().unwrap_or("unknown")
+                    ));
+                }
+                None => {
+                    ui.colored_label(
+                        Color32::from_rgb(230, 180, 100),
+                        format!(
+                            "Enrollment check failed: {}",
+                            enrollment.error.as_deref().unwrap_or("unknown error")
+                        ),
+                    );
+                }
+            }
+            ui.add_space(10.0);
+        } else {
+            ui.label("No enrollment check result recorded yet.");
+        }
         if let Some(remote) = read_remote_state() {
             ui.label(format!(
                 "Last locally applied server state: {:?}",

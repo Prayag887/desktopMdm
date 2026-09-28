@@ -26,6 +26,16 @@ pub struct ApiActivityEvent {
     pub response: String,
 }
 
+/// Most recent serial-based enrollment response, independent of heartbeats.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EnrollmentStatus {
+    pub checked_at: DateTime<Utc>,
+    pub device_serial_no: String,
+    pub enrolled: Option<bool>,
+    pub status: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct EnrollRequest<'a> {
     device_serial_no: &'a str,

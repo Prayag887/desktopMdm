@@ -3,8 +3,8 @@ use chrono::Utc;
 use clap::{Parser, Subcommand};
 use emi_core::{BiosProvider, DeviceHealth};
 use emi_device_agent::agent_api::{
-    AgentApi, ApiActivity, ApiActivityEvent, CommandAction, DEFAULT_API_BASE, LockState,
-    LockStateKind, PersistedRemoteState,
+    AgentApi, ApiActivity, ApiActivityEvent, CommandAction, DEFAULT_API_BASE, EnrollmentStatus,
+    LockState, LockStateKind, PersistedRemoteState,
 };
 use emi_device_agent::command_security::{
     CommandSecurityState, applied_security_state, normalize_public_key, verify_command_patch,
@@ -114,9 +114,9 @@ fn main() -> anyhow::Result<()> {
                 "local device {} ({})",
                 config.device_id,
                 if config.agent_token.is_some() {
-                    "enrolled"
+                    "local credentials stored; verify server enrollment with check-enroll"
                 } else {
-                    "not enrolled"
+                    "no local enrollment credentials"
                 }
             );
             Ok(())
@@ -235,12 +235,7 @@ fn default_api_base() -> String {
 
 fn enroll(server: &str) -> anyhow::Result<()> {
     let mut config = initialize()?;
-    if config.agent_token.is_some() {
-        info!(device_id=%config.device_id, "device is already enrolled");
-        return Ok(());
-    }
-    enroll_config(&mut config, server)?;
-    Ok(())
+    check_or_enroll_config(&mut config, Some(server))
 }
 
 fn enroll_config(config: &mut AgentConfig, server: &str) -> anyhow::Result<()> {
@@ -288,11 +283,30 @@ fn enroll_config(config: &mut AgentConfig, server: &str) -> anyhow::Result<()> {
 
 /// Resolve enrollment from the backend before deciding whether the one-time
 /// enrollment endpoint is appropriate for this Windows installation.
-fn check_or_enroll_config(config: &mut AgentConfig) -> anyhow::Result<()> {
+fn check_or_enroll_config(
+    config: &mut AgentConfig,
+    server_override: Option<&str>,
+) -> anyhow::Result<()> {
+    let directory = data_dir()?;
+    let _guard = emi_device_agent::state_store::lock(&directory, "enrollment.lock")?;
+    // Another process may have replaced the token while this process waited
+    // for the lock. Use the latest committed identity for the decision.
+    *config = serde_json::from_slice(&fs::read(directory.join("config.json"))?)
+        .context("read current enrollment credentials")?;
+    if let Some(server) = server_override {
+        config.api_base = server.trim_end_matches('/').to_string();
+    }
     let serial = hardware_serial_number()?;
     let api = AgentApi::new(&config.api_base)?;
     let enrollment = match api.check_enrollment(&serial) {
         Ok(enrollment) => {
+            record_enrollment_status(&EnrollmentStatus {
+                checked_at: Utc::now(),
+                device_serial_no: serial.clone(),
+                enrolled: Some(enrollment.enrolled),
+                status: Some(enrollment.status.clone()),
+                error: None,
+            });
             record_api_activity(
                 "/api/agent/check-enroll/",
                 format!("device_serial_no={serial}"),
@@ -304,6 +318,13 @@ fn check_or_enroll_config(config: &mut AgentConfig) -> anyhow::Result<()> {
             enrollment
         }
         Err(error) => {
+            record_enrollment_status(&EnrollmentStatus {
+                checked_at: Utc::now(),
+                device_serial_no: serial.clone(),
+                enrolled: None,
+                status: None,
+                error: Some(error.to_string()),
+            });
             record_api_activity(
                 "/api/agent/check-enroll/",
                 format!("device_serial_no={serial}"),
@@ -372,10 +393,8 @@ fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
     let mut next_health = Instant::now();
     let mut next_check_in = Instant::now();
     let mut next_enrollment = Instant::now();
-    // Both the service and one-shot UI run check the backend before their first
-    // check-in. Thereafter the service only retries the enrollment check while
-    // credentials are missing, respecting the endpoint's tight throttle.
-    let mut check_enrollment_once = auto_enroll;
+    // Recheck every five minutes even while a token exists: an administrator
+    // may reset the backend enrollment after this service has started.
     let mut api = config
         .agent_token
         .as_ref()
@@ -386,12 +405,25 @@ fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
             return Ok(());
         }
         let resumed = RESUME_REQUESTED.swap(false, Ordering::Relaxed);
-        if auto_enroll
-            && (config.agent_token.is_none() || check_enrollment_once)
-            && (Instant::now() >= next_enrollment || resumed)
+        // The UI and service are separate processes. Re-read credentials so a
+        // reset or enrollment performed by either process is respected here.
+        let disk_config: AgentConfig = serde_json::from_slice(
+            &fs::read(data_dir()?.join("config.json")).context("read current agent config")?,
+        )
+        .context("decode current agent config")?;
+        if config.agent_token != disk_config.agent_token
+            || config.remote_device_id != disk_config.remote_device_id
+            || config.api_base != disk_config.api_base
         {
-            check_enrollment_once = false;
-            match check_or_enroll_config(&mut config) {
+            config = disk_config;
+            api = config
+                .agent_token
+                .as_ref()
+                .map(|_| AgentApi::new(&config.api_base))
+                .transpose()?;
+        }
+        if auto_enroll && (Instant::now() >= next_enrollment || resumed) {
+            match check_or_enroll_config(&mut config, None) {
                 Ok(()) => api = Some(AgentApi::new(&config.api_base)?),
                 Err(error) => {
                     tracing::warn!(%error, "device enrollment check did not complete");
@@ -399,9 +431,6 @@ fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
                     // without trusted current credentials. Do not let a
                     // previously constructed client send a stale check-in.
                     api = None;
-                    // If the status check itself was unavailable, retain the
-                    // local credentials but retry the status check later.
-                    check_enrollment_once = !once && config.agent_token.is_some();
                     // A one-shot sync is invoked by the desktop UI. Its exit
                     // status must distinguish a real API enrollment from a
                     // local health refresh, otherwise the UI can claim this
@@ -623,6 +652,12 @@ fn record_api_activity(endpoint: &str, request: String, response: String) {
         activity.events.drain(..excess);
     }
     let _ = write_json_safely(&path, &activity);
+}
+
+fn record_enrollment_status(status: &EnrollmentStatus) {
+    if let Ok(directory) = data_dir() {
+        let _ = write_json_safely(&directory.join("enrollment-status.json"), status);
+    }
 }
 
 fn write_json_safely(path: &std::path::Path, value: &impl Serialize) -> anyhow::Result<()> {
