@@ -43,6 +43,19 @@ enum AgentCommand {
     Run {
         #[arg(long)]
         once: bool,
+        /// Attempt enrollment before the one-shot health and API synchronization.
+        ///
+        /// The Windows desktop UI uses this at launch so a newly installed
+        /// agent does not wait for the five-minute service retry interval.
+        #[arg(long)]
+        auto_enroll: bool,
+        /// Also POST to the enrollment endpoint when credentials already exist.
+        ///
+        /// Intended for an interactive launch-time verification. A one-time
+        /// backend can reject this repeat request; the retained credentials
+        /// are then verified by the following authenticated check-in.
+        #[arg(long)]
+        force_enroll: bool,
     },
     /// Install `WinGet` when it is missing (Windows only).
     Bootstrap,
@@ -99,7 +112,11 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         AgentCommand::Enroll { server } => enroll(&server),
-        AgentCommand::Run { once } => run(once, false),
+        AgentCommand::Run {
+            once,
+            auto_enroll,
+            force_enroll,
+        } => run(once, auto_enroll, force_enroll),
         AgentCommand::Bootstrap => bootstrap(),
         AgentCommand::Status => {
             let config = initialize()?;
@@ -262,7 +279,7 @@ fn enroll_config(config: &mut AgentConfig, server: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
+fn run(once: bool, auto_enroll: bool, force_enroll: bool) -> anyhow::Result<()> {
     let mut config = initialize()?;
     let recovery_directory = data_dir()?;
     let recovery_device = config.device_id;
@@ -297,13 +314,26 @@ fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
         }
         let resumed = RESUME_REQUESTED.swap(false, Ordering::Relaxed);
         if auto_enroll
-            && config.agent_token.is_none()
+            && (config.agent_token.is_none() || force_enroll)
             && (Instant::now() >= next_enrollment || resumed)
         {
             let server = config.api_base.clone();
             match enroll_config(&mut config, &server) {
                 Ok(()) => api = Some(AgentApi::new(&config.api_base)?),
-                Err(error) => tracing::warn!(%error, "device enrollment is still pending"),
+                Err(error) => {
+                    tracing::warn!(%error, "device enrollment did not complete");
+                    // A one-shot sync is invoked by the desktop UI. Its exit
+                    // status must distinguish a real API enrollment from a
+                    // local health refresh, otherwise the UI can claim this
+                    // Windows installation is enrolled when it is not.
+                    // A repeated enrollment POST can legitimately fail for a
+                    // device already enrolled by this one-time API. Keep its
+                    // existing credentials and let the immediate check-in
+                    // prove whether they are still valid.
+                    if once && config.agent_token.is_none() {
+                        return Err(error).context("device enrollment did not complete");
+                    }
+                }
             }
             next_enrollment = Instant::now() + Duration::from_secs(300);
         }
@@ -330,6 +360,12 @@ fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
                 &config.trusted_command_signing_keys,
             ) {
                 tracing::warn!(%error, "EMI admin synchronization failed; retaining last applied state");
+                // The long-running service keeps retrying. A UI-triggered
+                // one-shot run, however, must accurately surface a failed
+                // first check-in instead of returning success.
+                if once {
+                    return Err(error).context("initial EMI check-in failed");
+                }
             }
             next_check_in = Instant::now() + Duration::from_secs(60);
         }
