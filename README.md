@@ -114,7 +114,11 @@ See [production-hardening.md](docs/production-hardening.md) for recovery-key cus
 After `install.ps1` succeeds, the elevated `install.cmd` first exports the BCD
 store to `C:\bcd-backup`, then runs `reagentc /disable` and `reagentc /info`.
 It sets `recoveryenabled No` and `bootstatuspolicy IgnoreAllFailures` for both
-`{current}` and `{default}`. If the BCD export fails, recovery settings are not
+`{current}` and `{default}`. It then sets the `ShutdownWithoutLogon` DWORD to
+`0` under `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`,
+disabling shutdown without logging on. The registry write overwrites an existing
+value without prompting and returns a nonzero exit code on failure.
+If the BCD export fails, recovery settings are not
 changed. A failed recovery or BCD command stops configuration with a nonzero exit code
 and explicitly reports that the agent has already been installed. Failed agent
 installation does not change Windows RE through this wrapper. Running

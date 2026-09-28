@@ -52,7 +52,13 @@ if errorlevel 1 goto :bcd_failed
 bcdedit /set {default} bootstatuspolicy IgnoreAllFailures
 if errorlevel 1 goto :bcd_failed
 
+:: 5. Disable shutdown without logging on
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" ^
+ /v ShutdownWithoutLogon /t REG_DWORD /d 0 /f
+if errorlevel 1 goto :registry_failed
+
 echo Installation completed successfully. Windows RE and automatic boot recovery have been disabled.
+echo Shutdown without logging on has been disabled.
 echo BCD backup: C:\bcd-backup
 echo An administrator can restore Windows RE with: reagentc /enable
 pause
@@ -64,3 +70,10 @@ echo Agent installed, but BCD configuration FAILED with exit code %BCD_EXIT%.
 echo Review the error above. Recovery configuration may be incomplete.
 pause
 exit /b %BCD_EXIT%
+
+:registry_failed
+set "REGISTRY_EXIT=%ERRORLEVEL%"
+echo Agent installed, but setting ShutdownWithoutLogon FAILED with exit code %REGISTRY_EXIT%.
+echo Review the error above. Recovery settings have already been applied.
+pause
+exit /b %REGISTRY_EXIT%
