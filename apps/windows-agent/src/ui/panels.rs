@@ -607,7 +607,7 @@ impl DeviceApp {
         thread::spawn(move || {
             let result = agent_path().and_then(|agent| {
                 let script = format!(
-                    "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath '{}' -ArgumentList 'run','--once','--auto-enroll','--force-enroll' -Verb RunAs -PassThru -Wait; exit $p.ExitCode",
+                    "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath '{}' -ArgumentList 'run','--once','--auto-enroll' -Verb RunAs -PassThru -Wait; exit $p.ExitCode",
                     agent.to_string_lossy().replace('\'', "''")
                 );
                 Command::new("powershell.exe")

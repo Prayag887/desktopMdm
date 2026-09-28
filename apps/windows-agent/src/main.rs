@@ -43,19 +43,12 @@ enum AgentCommand {
     Run {
         #[arg(long)]
         once: bool,
-        /// Attempt enrollment before the one-shot health and API synchronization.
+        /// Check enrollment before the one-shot health and API synchronization.
         ///
         /// The Windows desktop UI uses this at launch so a newly installed
         /// agent does not wait for the five-minute service retry interval.
         #[arg(long)]
         auto_enroll: bool,
-        /// Also POST to the enrollment endpoint when credentials already exist.
-        ///
-        /// Intended for an interactive launch-time verification. A one-time
-        /// backend can reject this repeat request; the retained credentials
-        /// are then verified by the following authenticated check-in.
-        #[arg(long)]
-        force_enroll: bool,
     },
     /// Install `WinGet` when it is missing (Windows only).
     Bootstrap,
@@ -112,11 +105,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         AgentCommand::Enroll { server } => enroll(&server),
-        AgentCommand::Run {
-            once,
-            auto_enroll,
-            force_enroll,
-        } => run(once, auto_enroll, force_enroll),
+        AgentCommand::Run { once, auto_enroll } => run(once, auto_enroll),
         AgentCommand::Bootstrap => bootstrap(),
         AgentCommand::Status => {
             let config = initialize()?;
@@ -279,7 +268,31 @@ fn enroll_config(config: &mut AgentConfig, server: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run(once: bool, auto_enroll: bool, force_enroll: bool) -> anyhow::Result<()> {
+/// Resolve enrollment from the backend before deciding whether the one-time
+/// enrollment endpoint is appropriate for this Windows installation.
+fn check_or_enroll_config(config: &mut AgentConfig) -> anyhow::Result<()> {
+    let serial = hardware_serial_number()?;
+    let api = AgentApi::new(&config.api_base)?;
+    let enrollment = api
+        .check_enrollment(&serial)
+        .with_context(|| format!("check enrollment for BIOS serial {serial}"))?;
+    if enrollment.enrolled {
+        if config.agent_token.is_none() || config.remote_device_id.is_none() {
+            bail!(
+                "the server reports BIOS serial {serial} is enrolled ({}) but this Windows installation has no local agent credentials; an administrator must reset or reissue enrollment",
+                enrollment.status
+            );
+        }
+        info!(serial, status = %enrollment.status, "device enrollment confirmed by EMI admin API");
+        return Ok(());
+    }
+
+    info!(serial, status = %enrollment.status, "device is not enrolled; starting enrollment");
+    let server = config.api_base.clone();
+    enroll_config(config, &server)
+}
+
+fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
     let mut config = initialize()?;
     let recovery_directory = data_dir()?;
     let recovery_device = config.device_id;
@@ -303,6 +316,10 @@ fn run(once: bool, auto_enroll: bool, force_enroll: bool) -> anyhow::Result<()> 
     let mut next_health = Instant::now();
     let mut next_check_in = Instant::now();
     let mut next_enrollment = Instant::now();
+    // The UI's one-shot run must check the backend even when local credentials
+    // already exist. The long-running service only repeats the check while it
+    // is missing credentials, respecting the endpoint's tight throttle.
+    let mut check_enrollment_once = auto_enroll && once;
     let mut api = config
         .agent_token
         .as_ref()
@@ -314,27 +331,23 @@ fn run(once: bool, auto_enroll: bool, force_enroll: bool) -> anyhow::Result<()> 
         }
         let resumed = RESUME_REQUESTED.swap(false, Ordering::Relaxed);
         if auto_enroll
-            && (config.agent_token.is_none() || force_enroll)
+            && (config.agent_token.is_none() || check_enrollment_once)
             && (Instant::now() >= next_enrollment || resumed)
         {
-            let server = config.api_base.clone();
-            match enroll_config(&mut config, &server) {
+            match check_or_enroll_config(&mut config) {
                 Ok(()) => api = Some(AgentApi::new(&config.api_base)?),
                 Err(error) => {
-                    tracing::warn!(%error, "device enrollment did not complete");
+                    tracing::warn!(%error, "device enrollment check did not complete");
                     // A one-shot sync is invoked by the desktop UI. Its exit
                     // status must distinguish a real API enrollment from a
                     // local health refresh, otherwise the UI can claim this
                     // Windows installation is enrolled when it is not.
-                    // A repeated enrollment POST can legitimately fail for a
-                    // device already enrolled by this one-time API. Keep its
-                    // existing credentials and let the immediate check-in
-                    // prove whether they are still valid.
-                    if once && config.agent_token.is_none() {
-                        return Err(error).context("device enrollment did not complete");
+                    if once {
+                        return Err(error).context("device enrollment check did not complete");
                     }
                 }
             }
+            check_enrollment_once = false;
             next_enrollment = Instant::now() + Duration::from_secs(300);
         }
         if Instant::now() >= next_health || resumed {
@@ -601,7 +614,7 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
     if handle.set_service_status(running).is_err() {
         return;
     }
-    let exit_code = match run(false, true, false) {
+    let exit_code = match run(false, true) {
         Ok(()) => 0,
         Err(error) => {
             error!(%error, "service stopped with an error");

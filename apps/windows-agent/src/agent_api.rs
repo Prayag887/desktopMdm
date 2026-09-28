@@ -18,6 +18,17 @@ struct EnrollRequest<'a> {
     platform: &'static str,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct CheckEnrollRequest<'a> {
+    device_serial_no: &'a str,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct CheckEnrollResponse {
+    pub enrolled: bool,
+    pub status: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct EnrollResponse {
     pub token: String,
@@ -155,6 +166,25 @@ impl AgentApi {
             .send()
             .context("contact EMI enrollment API")?;
         Self::decode(response, "enroll device")
+    }
+
+    /// Reports whether the BIOS serial has an enrolled Device Agent.
+    ///
+    /// This unauthenticated, side-effect-free check determines whether an
+    /// installation should call the one-time enrollment endpoint.
+    ///
+    /// # Errors
+    /// Returns transport errors or the server's validation response.
+    pub fn check_enrollment(&self, serial: &str) -> anyhow::Result<CheckEnrollResponse> {
+        let response = self
+            .client
+            .post(self.url("/api/agent/check-enroll/"))
+            .json(&CheckEnrollRequest {
+                device_serial_no: serial,
+            })
+            .send()
+            .context("contact EMI enrollment-status API")?;
+        Self::decode(response, "check device enrollment")
     }
 
     /// Sends the authenticated startup/heartbeat status request.
@@ -471,6 +501,29 @@ mod tests {
         assert_eq!(body["device_serial_no"], "SERIAL-123");
         assert_eq!(body["agent_version"], "1.2.3");
         assert_eq!(body["platform"], "WINDOWS");
+    }
+
+    #[test]
+    fn check_enrollment_sends_only_the_documented_serial() {
+        let (base_url, requests, server) = spawn_server(vec![MockResponse::json(
+            "200 OK",
+            &serde_json::json!({"enrolled": true, "status": "ACTIVE"}),
+        )]);
+
+        let enrollment = AgentApi::new(&base_url)
+            .unwrap()
+            .check_enrollment("SERIAL-123")
+            .unwrap();
+        server.join().unwrap();
+
+        assert!(enrollment.enrolled);
+        assert_eq!(enrollment.status, "ACTIVE");
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(requests[0].path, "/api/agent/check-enroll/");
+        assert!(requests[0].header("authorization").is_none());
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body, serde_json::json!({"device_serial_no": "SERIAL-123"}));
     }
 
     #[test]
