@@ -557,7 +557,7 @@ impl DeviceApp {
         ui.add_space(10.0);
         if let Some(remote) = read_remote_state() {
             ui.label(format!(
-                "Current server state: {:?}",
+                "Last locally applied server state: {:?}",
                 remote.lock_state.state
             ));
             ui.label(format!("Reason: {}", remote.lock_state.reason));
@@ -573,7 +573,7 @@ impl DeviceApp {
             ui.add_space(12.0);
             ui.heading("Latest EMI API activity");
             ui.small(format!("Recorded: {}", activity.recorded_at));
-            for event in activity.events {
+            for event in activity.events.into_iter().rev() {
                 ui.separator();
                 ui.monospace(event.endpoint);
                 ui.label(format!("Request: {}", event.request));

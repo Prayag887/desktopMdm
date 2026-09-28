@@ -324,9 +324,28 @@ fn check_or_enroll_config(config: &mut AgentConfig) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // The backend is authoritative. Never keep sending check-ins with a token
+    // once it says this serial is not enrolled; doing so produced misleading
+    // 401 events ahead of the enrollment decision in the restriction UI.
+    clear_enrollment_credentials(config)?;
     info!(serial, status = %enrollment.status, "device is not enrolled; starting enrollment");
     let server = config.api_base.clone();
     enroll_config(config, &server)
+}
+
+fn clear_enrollment_credentials(config: &mut AgentConfig) -> anyhow::Result<()> {
+    config.agent_token = None;
+    config.remote_device_id = None;
+    write_json_safely(&data_dir()?.join("config.json"), config)?;
+    write_json_safely(
+        &data_dir()?.join("ui-config.json"),
+        &serde_json::json!({
+            "device_id": config.device_id,
+            "remote_device_id": null,
+            "enrolled": false,
+            "api_base": config.api_base,
+        }),
+    )
 }
 
 fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
@@ -353,10 +372,10 @@ fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
     let mut next_health = Instant::now();
     let mut next_check_in = Instant::now();
     let mut next_enrollment = Instant::now();
-    // The UI's one-shot run must check the backend even when local credentials
-    // already exist. The long-running service only repeats the check while it
-    // is missing credentials, respecting the endpoint's tight throttle.
-    let mut check_enrollment_once = auto_enroll && once;
+    // Both the service and one-shot UI run check the backend before their first
+    // check-in. Thereafter the service only retries the enrollment check while
+    // credentials are missing, respecting the endpoint's tight throttle.
+    let mut check_enrollment_once = auto_enroll;
     let mut api = config
         .agent_token
         .as_ref()
@@ -371,10 +390,18 @@ fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
             && (config.agent_token.is_none() || check_enrollment_once)
             && (Instant::now() >= next_enrollment || resumed)
         {
+            check_enrollment_once = false;
             match check_or_enroll_config(&mut config) {
                 Ok(()) => api = Some(AgentApi::new(&config.api_base)?),
                 Err(error) => {
                     tracing::warn!(%error, "device enrollment check did not complete");
+                    // An unsuccessful check/enroll attempt leaves this PC
+                    // without trusted current credentials. Do not let a
+                    // previously constructed client send a stale check-in.
+                    api = None;
+                    // If the status check itself was unavailable, retain the
+                    // local credentials but retry the status check later.
+                    check_enrollment_once = !once && config.agent_token.is_some();
                     // A one-shot sync is invoked by the desktop UI. Its exit
                     // status must distinguish a real API enrollment from a
                     // local health refresh, otherwise the UI can claim this
@@ -384,7 +411,6 @@ fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
                     }
                 }
             }
-            check_enrollment_once = false;
             next_enrollment = Instant::now() + Duration::from_secs(300);
         }
         if Instant::now() >= next_health || resumed {
