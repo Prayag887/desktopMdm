@@ -109,7 +109,7 @@ packaging/windows/  Installer and uninstaller
 
 See [production-hardening.md](docs/production-hardening.md) for recovery-key custody, command-signing integration, mandatory release signing, and staged BitLocker/LAPS/App Control deployment. There is no shared unlock word or built-in lab-key fallback.
 
-## Windows recovery configuration (v0.6.33)
+## Windows recovery configuration (v0.6.34)
 
 After `install.ps1` succeeds, the elevated `install.cmd` first exports the BCD
 store to `C:\bcd-backup`, then runs `reagentc /disable` and `reagentc /info`.

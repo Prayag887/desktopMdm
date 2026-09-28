@@ -601,7 +601,7 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
     if handle.set_service_status(running).is_err() {
         return;
     }
-    let exit_code = match run(false, true) {
+    let exit_code = match run(false, true, false) {
         Ok(()) => 0,
         Err(error) => {
             error!(%error, "service stopped with an error");
