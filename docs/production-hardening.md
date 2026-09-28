@@ -35,12 +35,18 @@ Required acceptance: actual server-signed LOCK and UNLOCK; changed reason/action
 
 No signing identity is currently configured. Choose a certificate/signing provider that supports your organization and jurisdiction. New certificates may require hardware-backed or managed signing; do not assume the provider can export a PFX.
 
-The existing PFX-capable workflow now requires:
+The default signed-release workflow requires:
 
 - Repository secrets `CODE_SIGN_PFX_BASE64` and `CODE_SIGN_PFX_PASSWORD`.
 - Repository variable `CODE_SIGN_CERT_SHA1`: the intended publisher certificate thumbprint (40 hex characters).
 
 Configure those through GitHub's protected secret UI only if your provider permits this signing model. Otherwise integrate the provider's supported managed-signing/OIDC workflow and preserve the signature, publisher, timestamp, and checksum checks. Do not substitute a self-signed certificate for a publicly trusted production identity. Avoid broad Defender exclusions; validate the signed program against organizational policy.
+
+For an explicitly authorized unsigned release, manually run the Windows desktop
+release workflow against a `v*` tag with `allow_unsigned` enabled. This skips
+publisher signing and labels both the GitHub release and downloaded package as
+unsigned. Tag-triggered releases still require the signing configuration above.
+Unsigned executables may prompt Windows publisher or SmartScreen warnings.
 
 ## Fleet setup order (requires an Intune/Entra tenant)
 

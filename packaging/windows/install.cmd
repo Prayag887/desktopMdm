@@ -46,16 +46,46 @@ if errorlevel 1 goto :bcd_failed
 bcdedit /set {default} recoveryenabled No
 if errorlevel 1 goto :bcd_failed
 
+rem WinRE may already have removed these values. Report deletion failures and continue.
+bcdedit /deletevalue {current} recoverysequence
+if errorlevel 1 echo WARNING: Could not delete current recoverysequence; it may already be absent.
+bcdedit /deletevalue {default} recoverysequence
+if errorlevel 1 echo WARNING: Could not delete default recoverysequence; it may already be absent.
+
 :: 4. Prevent failed boots from automatically entering recovery
 bcdedit /set {current} bootstatuspolicy IgnoreAllFailures
 if errorlevel 1 goto :bcd_failed
 bcdedit /set {default} bootstatuspolicy IgnoreAllFailures
 if errorlevel 1 goto :bcd_failed
 
-:: 5. Disable shutdown without logging on
+:: 5. Configure boot options
+bcdedit /set {globalsettings} advancedoptions false
+if errorlevel 1 goto :bcd_failed
+bcdedit /set {globalsettings} optionsedit false
+if errorlevel 1 goto :bcd_failed
+bcdedit /set {current} bootmenupolicy Standard
+if errorlevel 1 goto :bcd_failed
+bcdedit /timeout 0
+if errorlevel 1 goto :bcd_failed
+
+:: 6. Disable shutdown without logging on
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" ^
  /v ShutdownWithoutLogon /t REG_DWORD /d 0 /f
 if errorlevel 1 goto :registry_failed
+
+:: 7. Show final recovery, boot, and hardware security status
+reagentc /info
+if errorlevel 1 echo WARNING: Could not query final Windows RE status.
+bcdedit /enum {current}
+if errorlevel 1 goto :bcd_failed
+bcdedit /enum {globalsettings}
+if errorlevel 1 goto :bcd_failed
+powershell -NoProfile -Command "Confirm-SecureBootUEFI"
+if errorlevel 1 echo WARNING: Secure Boot status query failed or is unsupported on this device.
+powershell -NoProfile -Command "Get-Tpm"
+if errorlevel 1 echo WARNING: TPM status query failed on this device.
+manage-bde -status C:
+if errorlevel 1 echo WARNING: Could not query BitLocker status for C:.
 
 echo Installation completed successfully. Windows RE and automatic boot recovery have been disabled.
 echo Shutdown without logging on has been disabled.

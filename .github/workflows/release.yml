@@ -2,6 +2,13 @@ name: Windows desktop release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      allow_unsigned:
+        description: 'Publish an explicitly labeled unsigned release (no publisher signature)'
+        type: boolean
+        required: true
+        default: false
 permissions:
   contents: write
 concurrency:
@@ -16,7 +23,8 @@ jobs:
       # Add these repo secrets to enable Authenticode signing:
       #   CODE_SIGN_PFX_BASE64     - base64 of your OV/EV code-signing .pfx
       #   CODE_SIGN_PFX_PASSWORD   - the .pfx password
-      # Production releases fail closed when signing is not configured.
+      # Tag pushes require signing. Unsigned publishing requires explicit manual opt-in.
+      ALLOW_UNSIGNED: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_unsigned }}
       SIGN_PFX_BASE64: ${{ secrets.CODE_SIGN_PFX_BASE64 }}
       SIGN_PFX_PASSWORD: ${{ secrets.CODE_SIGN_PFX_PASSWORD }}
       SIGN_CERT_SHA1: ${{ vars.CODE_SIGN_CERT_SHA1 }}
@@ -27,11 +35,16 @@ jobs:
         with:
           shared-key: windows
           save-if: false
-      - name: Require production signing identity
+      - name: Validate release mode and signing identity
         shell: pwsh
         run: |
-          if (-not $env:SIGN_PFX_BASE64 -or -not $env:SIGN_PFX_PASSWORD -or $env:SIGN_CERT_SHA1 -notmatch '^[A-Fa-f0-9]{40}$') {
-            throw 'Production release blocked: configure CODE_SIGN_PFX_BASE64, CODE_SIGN_PFX_PASSWORD, and CODE_SIGN_CERT_SHA1, or integrate your managed signing service. Unsigned releases are not published.'
+          if ($env:GITHUB_REF -notlike 'refs/tags/v*') {
+            throw 'Run this workflow against a version tag (v*), not a branch.'
+          }
+          if ($env:ALLOW_UNSIGNED -eq 'true') {
+            Write-Warning 'Explicit unsigned release: binaries will have no verified publisher signature.'
+          } elseif (-not $env:SIGN_PFX_BASE64 -or -not $env:SIGN_PFX_PASSWORD -or $env:SIGN_CERT_SHA1 -notmatch '^[A-Fa-f0-9]{40}$') {
+            throw 'Production release blocked: configure CODE_SIGN_PFX_BASE64, CODE_SIGN_PFX_PASSWORD, and CODE_SIGN_CERT_SHA1, or integrate your managed signing service. For an explicitly labeled unsigned release, manually dispatch this workflow on the version tag with allow_unsigned enabled.'
           }
       - run: cargo build --locked --release --package emi-device-agent
       - name: Verify binaries do not require the Visual C++ runtime
@@ -46,6 +59,7 @@ jobs:
             }
           }
       - name: Sign and verify production binaries
+        if: env.ALLOW_UNSIGNED != 'true'
         shell: pwsh
         run: |
           $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
@@ -76,6 +90,9 @@ jobs:
           Copy-Item packaging/windows/recovery-public-key.hex dist/emi-device-agent-windows-x64/
           Copy-Item packaging/windows/intune dist/emi-device-agent-windows-x64/intune -Recurse
           Copy-Item README.md,LICENSE dist/emi-device-agent-windows-x64/
+          if ($env:ALLOW_UNSIGNED -eq 'true') {
+            'UNSIGNED RELEASE: These executables have no verified publisher signature. Windows may show an unknown publisher or SmartScreen warning.' | Set-Content dist/emi-device-agent-windows-x64/UNSIGNED.txt -Encoding utf8
+          }
           Compress-Archive dist/emi-device-agent-windows-x64/* dist/emi-device-agent-windows-x64.zip
           $hash = (Get-FileHash dist/emi-device-agent-windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  emi-device-agent-windows-x64.zip" | Set-Content dist/SHA256SUMS.txt -Encoding ascii
@@ -85,6 +102,10 @@ jobs:
           path: dist/emi-device-agent-windows-x64.zip
       - uses: softprops/action-gh-release@v2
         with:
+          draft: false
+          name: ${{ github.ref_name }}${{ env.ALLOW_UNSIGNED == 'true' && ' (unsigned)' || '' }}
+          body: >-
+            ${{ env.ALLOW_UNSIGNED == 'true' && '**Unsigned release:** These executables have no verified publisher signature. Windows may show an unknown publisher or SmartScreen warning. See UNSIGNED.txt in the download.' || '' }}
           generate_release_notes: true
           files: |
             dist/emi-device-agent-windows-x64.zip

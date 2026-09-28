@@ -116,10 +116,18 @@ store to `C:\bcd-backup`, then runs `reagentc /disable` and `reagentc /info`.
 It sets `recoveryenabled No` and `bootstatuspolicy IgnoreAllFailures` for both
 `{current}` and `{default}`. It then sets the `ShutdownWithoutLogon` DWORD to
 `0` under `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`,
-disabling shutdown without logging on. The registry write overwrites an existing
+disabling shutdown without logging on. It also deletes `recoverysequence` for both
+boot entries, disables `advancedoptions` and `optionsedit` for `{globalsettings}`,
+sets the current boot menu policy to `Standard`, and sets the boot timeout to `0`.
+Deletion failures are reported as warnings because WinRE may already have removed
+the recovery-sequence values. Other BCD failures stop configuration.
+Final diagnostics print WinRE and BCD settings, Secure Boot, TPM, and BitLocker
+status. These queries do not enable Secure Boot, provision a TPM, or encrypt C:.
+Unsupported or failed hardware-status queries are reported as warnings.
+The registry write overwrites an existing
 value without prompting and returns a nonzero exit code on failure.
 If the BCD export fails, recovery settings are not
-changed. A failed recovery or BCD command stops configuration with a nonzero exit code
+changed. A failed recovery command or required BCD command stops configuration with a nonzero exit code
 and explicitly reports that the agent has already been installed. Failed agent
 installation does not change Windows RE through this wrapper. Running
 `install.ps1` directly does not apply this recovery configuration.
