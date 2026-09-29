@@ -16,8 +16,8 @@ use zeroize::{Zeroize as _, Zeroizing};
 
 use super::app::{BiosPasswordAction, DeviceApp, OperationEvent};
 use super::system::{
-    CREATE_NO_WINDOW, agent_path, bios_adapter_status, read_api_activity, read_enrollment_status,
-    read_health, read_remote_state, service_is_running,
+    CREATE_NO_WINDOW, agent_path, bios_adapter_status, probe_service_running, read_api_activity,
+    read_enrollment_status, read_health, read_remote_state,
 };
 
 fn provider_name(provider: BiosProvider) -> &'static str {
@@ -525,16 +525,27 @@ impl DeviceApp {
     fn restart_into_firmware(&mut self) {
         self.clear_passwords();
         self.confirm_firmware_restart = false;
-        let command = "$ErrorActionPreference='Stop'; Start-Process -FilePath 'shutdown.exe' -ArgumentList '/r','/fw','/t','0' -Verb RunAs -Wait";
-        let result = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", command])
-            .creation_flags(CREATE_NO_WINDOW)
-            .status();
-        self.status = match result {
-            Ok(status) if status.success() => "Restarting into UEFI firmware settings…".into(),
-            Ok(status) => format!("Windows could not schedule the UEFI restart: {status}"),
-            Err(error) => format!("Windows could not open UEFI settings: {error}"),
-        };
+        if self.result_rx.is_some() {
+            return;
+        }
+        self.status = "Waiting for administrator approval to restart into UEFI…".into();
+        let (tx, rx) = mpsc::channel();
+        self.result_rx = Some(rx);
+        // Start-Process -Wait blocks until the UAC prompt is answered; keep it
+        // off the UI thread so the window stays responsive meanwhile.
+        thread::spawn(move || {
+            let command = "$ErrorActionPreference='Stop'; Start-Process -FilePath 'shutdown.exe' -ArgumentList '/r','/fw','/t','0' -Verb RunAs -Wait";
+            let result = Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", command])
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+            let message = match result {
+                Ok(status) if status.success() => "Restarting into UEFI firmware settings…".into(),
+                Ok(status) => format!("Windows could not schedule the UEFI restart: {status}"),
+                Err(error) => format!("Windows could not open UEFI settings: {error}"),
+            };
+            let _ = tx.send(OperationEvent::Finished(message));
+        });
     }
 
     pub(crate) fn render_bluescreen(&mut self, ui: &mut egui::Ui, _context: &egui::Context) {
@@ -669,7 +680,9 @@ impl DeviceApp {
 
     pub(crate) fn reload(&mut self) {
         self.health = read_health();
-        self.service_running = service_is_running();
+        if self.service_probe.is_none() {
+            self.service_probe = Some(probe_service_running());
+        }
         self.last_refresh = Instant::now();
     }
 

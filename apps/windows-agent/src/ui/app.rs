@@ -10,8 +10,8 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::system::{
-    current_user_is_admin, launched_as_user_shell, read_device_id, read_health, read_remote_state,
-    service_is_running,
+    current_user_is_admin, launched_as_user_shell, probe_service_running, read_device_id,
+    read_health, read_remote_state,
 };
 use crate::bluescreen::BluescreenSession;
 
@@ -42,6 +42,7 @@ impl BiosPasswordAction {
 pub(crate) struct DeviceApp {
     pub(crate) health: Option<DeviceHealth>,
     pub(crate) service_running: bool,
+    pub(crate) service_probe: Option<Receiver<bool>>,
     pub(crate) status: String,
     pub(crate) result_rx: Option<Receiver<OperationEvent>>,
     pub(crate) operation_progress: Option<f32>,
@@ -95,7 +96,8 @@ impl DeviceApp {
             .map_or_else(String::new, |state| state.lock_state.reason.clone());
         let mut app = Self {
             health: read_health(),
-            service_running: service_is_running(),
+            service_running: false,
+            service_probe: Some(probe_service_running()),
             // A persisted command state can outlive enrollment credentials
             // (for example after an incomplete reinstall). It is not proof
             // that this Windows installation is enrolled, so wait for the
@@ -158,6 +160,20 @@ impl DeviceApp {
         ui.label(&self.status);
     }
 
+    fn poll_service_probe(&mut self) {
+        let Some(probe) = &self.service_probe else {
+            return;
+        };
+        match probe.try_recv() {
+            Ok(running) => {
+                self.service_running = running;
+                self.service_probe = None;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => self.service_probe = None,
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
     fn sync_remote_lock_state(&mut self, context: &egui::Context) {
         if self.administrator {
             return;
@@ -191,6 +207,7 @@ impl eframe::App for DeviceApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_recovery_unlock(context);
         self.sync_remote_lock_state(context);
+        self.poll_service_probe();
         let locked = self.blue_screen_active(context);
         // Drive the global keyboard hook: block the keyboard while a lock screen
         // is showing OR the manual "disable keyboard" toggle is on.

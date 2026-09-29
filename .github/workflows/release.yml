@@ -103,7 +103,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           draft: false
-          name: ${{ github.ref_name }}${{ env.ALLOW_UNSIGNED == 'true' && ' (unsigned)' || '' }}
+          name: ${{ github.ref_name }}
           body: >-
             ${{ env.ALLOW_UNSIGNED == 'true' && '**Unsigned release:** These executables have no verified publisher signature. Windows may show an unknown publisher or SmartScreen warning. See UNSIGNED.txt in the download.' || '' }}
           generate_release_notes: true

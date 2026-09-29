@@ -235,6 +235,7 @@ fn default_api_base() -> String {
 
 fn enroll(server: &str) -> anyhow::Result<()> {
     let mut config = initialize()?;
+    let _api_guard = emi_device_agent::state_store::lock(&data_dir()?, "api.lock")?;
     check_or_enroll_config(&mut config, Some(server))
 }
 
@@ -405,6 +406,23 @@ fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
             return Ok(());
         }
         let resumed = RESUME_REQUESTED.swap(false, Ordering::Relaxed);
+        if Instant::now() >= next_health || resumed {
+            write_health_snapshot(config.device_id)?;
+            next_health = Instant::now() + Duration::from_secs(300);
+        }
+        let enrollment_due = auto_enroll && (Instant::now() >= next_enrollment || resumed);
+        let check_in_due = Instant::now() >= next_check_in || resumed;
+        // The service and the UI's one-shot sync are separate processes. Hold
+        // one lock across config reload, check-enroll, enroll and check-in so
+        // their API calls never interleave and each sees the other's result.
+        let api_guard = if enrollment_due || check_in_due {
+            Some(emi_device_agent::state_store::lock(
+                &data_dir()?,
+                "api.lock",
+            )?)
+        } else {
+            None
+        };
         // The UI and service are separate processes. Re-read credentials so a
         // reset or enrollment performed by either process is respected here.
         let disk_config: AgentConfig = serde_json::from_slice(
@@ -422,7 +440,7 @@ fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
                 .map(|_| AgentApi::new(&config.api_base))
                 .transpose()?;
         }
-        if auto_enroll && (Instant::now() >= next_enrollment || resumed) {
+        if enrollment_due {
             match check_or_enroll_config(&mut config, None) {
                 Ok(()) => api = Some(AgentApi::new(&config.api_base)?),
                 Err(error) => {
@@ -442,16 +460,7 @@ fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
             }
             next_enrollment = Instant::now() + Duration::from_secs(300);
         }
-        if Instant::now() >= next_health || resumed {
-            let health = collect_health(config.device_id);
-            let directory = data_dir()?;
-            let temporary = directory.join("health.json.tmp");
-            fs::write(&temporary, serde_json::to_vec_pretty(&health)?)?;
-            fs::rename(temporary, directory.join("health.json"))?;
-            info!(device_id=%config.device_id, "local health snapshot refreshed");
-            next_health = Instant::now() + Duration::from_secs(300);
-        }
-        if (Instant::now() >= next_check_in || resumed)
+        if check_in_due
             && let (Some(api), Some(token), Some(device_uuid)) = (
                 api.as_ref(),
                 config.agent_token.as_deref(),
@@ -474,11 +483,22 @@ fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
             }
             next_check_in = Instant::now() + Duration::from_secs(60);
         }
+        drop(api_guard);
         if once {
             return Ok(());
         }
         std::thread::sleep(Duration::from_secs(1));
     }
+}
+
+fn write_health_snapshot(device_id: Uuid) -> anyhow::Result<()> {
+    let health = collect_health(device_id);
+    let directory = data_dir()?;
+    let temporary = directory.join("health.json.tmp");
+    fs::write(&temporary, serde_json::to_vec_pretty(&health)?)?;
+    fs::rename(temporary, directory.join("health.json"))?;
+    info!(%device_id, "local health snapshot refreshed");
+    Ok(())
 }
 
 fn synchronize_remote_state(

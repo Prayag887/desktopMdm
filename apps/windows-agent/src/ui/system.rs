@@ -187,7 +187,17 @@ pub(crate) fn agent_path() -> Result<PathBuf, String> {
     Ok(current.with_file_name("emi-device-agent.exe"))
 }
 
-pub(crate) fn service_is_running() -> bool {
+/// Query the service state on a worker thread; `sc.exe` can stall for seconds
+/// on a busy machine and must never run on the UI thread.
+pub(crate) fn probe_service_running() -> std::sync::mpsc::Receiver<bool> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(service_is_running());
+    });
+    rx
+}
+
+fn service_is_running() -> bool {
     Command::new("sc.exe")
         .args(["query", "EmiDeviceAgent"])
         .creation_flags(CREATE_NO_WINDOW)
