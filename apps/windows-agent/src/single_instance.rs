@@ -1,11 +1,9 @@
 //! Single-instance guard for the lock UI.
 //!
-//! Install sets up several independent auto-start triggers for the same
-//! `emi-device-ui.exe` (a StartUp-folder shortcut, an all-users logon
-//! scheduled task, and — once payment restriction is applied — a per-user
-//! shell replacement plus its own logon task). At a single logon, more than
-//! one of these can fire, launching several instances of this process at
-//! once. Each instance independently boots straight into the fullscreen,
+//! Upgraded installations and payment restriction can have more than one
+//! launch source for `emi-device-ui.exe` (the all-users logon task, a per-user
+//! shell replacement, and its own logon task). At a single logon, several can
+//! fire at once. Each instance independently boots into the fullscreen,
 //! always-on-top lock screen and re-asserts focus/topmost every ~100 ms, so
 //! two or more windows fight over the foreground — seen as the blue screen
 //! "appearing more than once" and flickering, mostly right after a reboot.

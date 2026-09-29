@@ -1,0 +1,13 @@
+This release is Authenticode-signed with a newly generated self-signed
+certificate named "YajTech EMI Device Agent Local Release".
+
+The signature protects the executables against changes after signing, and the
+included publisher-certificate.cer lets an administrator verify the publisher
+thumbprint. Because this certificate was generated locally rather than issued
+by a public certificate authority, Windows does not trust it automatically on
+other PCs. For production distribution without an Unknown Publisher warning,
+sign the same binaries with the organization's CA-issued or managed code-
+signing identity.
+
+Keep the PFX, private .key, and password files in dist/signing-keys private.
+They are deliberately excluded from this release package and from Git.

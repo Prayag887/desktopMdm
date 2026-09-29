@@ -78,28 +78,31 @@ pub(crate) fn read_enrollment_status() -> Option<EnrollmentStatus> {
 }
 
 /// Enable or disable Task Manager for the current user via the documented
-/// `DisableTaskMgr` policy value in the user's own HKCU hive. No elevation is
-/// needed (the app runs as this user), it works on Windows Home, and Windows
-/// shows "Task Manager has been disabled by your administrator" on Ctrl+Shift+Esc
-/// or the taskbar menu. Best-effort: registry failures are ignored so a lock is
-/// never blocked by this. Removed again on unlock.
+/// `DisableTaskMgr` policy value in the user's own HKCU hive. Registry helpers
+/// can be slow while the user profile is still loading after a reboot, so this
+/// must never run on eframe's event-loop thread. Otherwise Windows sees a
+/// created window that is not pumping messages and reports the app as "Not
+/// responding". Best-effort: registry failures are ignored so a lock is never
+/// blocked by this. Removed again on unlock.
 pub(crate) fn set_task_manager_disabled(disabled: bool) {
-    const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System";
-    let value = if disabled { "1" } else { "0" };
-    let _ = Command::new("reg.exe")
-        .args([
-            "add",
-            KEY,
-            "/v",
-            "DisableTaskMgr",
-            "/t",
-            "REG_DWORD",
-            "/d",
-            value,
-            "/f",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .status();
+    std::thread::spawn(move || {
+        const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System";
+        let value = if disabled { "1" } else { "0" };
+        let _ = Command::new("reg.exe")
+            .args([
+                "add",
+                KEY,
+                "/v",
+                "DisableTaskMgr",
+                "/t",
+                "REG_DWORD",
+                "/d",
+                value,
+                "/f",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    });
 }
 
 fn dell_cctk_path() -> Option<PathBuf> {

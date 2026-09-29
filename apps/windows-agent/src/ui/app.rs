@@ -311,6 +311,12 @@ pub fn run() -> eframe::Result<()> {
     // Install the global keyboard hook on this (UI) thread before the event loop
     // starts; it stays dormant until a lock screen sets it active.
     crate::keyboard_guard::install();
+    // DeviceApp::load performs a pair of short Windows account/registry probes.
+    // Complete those before eframe creates the native window: during profile
+    // initialization after a reboot, a helper process can be delayed, and a
+    // visible window that has not started its event loop is reported by Windows
+    // as "Not responding".
+    let app = DeviceApp::load();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([840.0, 720.0])
@@ -320,9 +326,9 @@ pub fn run() -> eframe::Result<()> {
     eframe::run_native(
         "EMI Device",
         options,
-        Box::new(|context| {
+        Box::new(move |context| {
             context.egui_ctx.set_visuals(egui::Visuals::dark());
-            Ok(Box::new(DeviceApp::load()))
+            Ok(Box::new(app))
         }),
     )
 }

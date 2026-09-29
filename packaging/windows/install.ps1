@@ -133,12 +133,11 @@ catch { throw "Automatic EMI service installation failed: $_" }
 $uiPath = Join-Path $InstallDir 'emi-device-ui.exe'
 $startup = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\StartUp'
 $shortcutPath = Join-Path $startup 'EMI Device.lnk'
-$shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = $uiPath
-$shortcut.WorkingDirectory = $InstallDir
-$shortcut.Description = 'EMI desktop companion'
-$shortcut.Save()
+# Older installers also created a StartUp-folder shortcut. It races the
+# scheduled task at every logon and can create two windows before the named
+# mutex settles on a busy post-reboot system. Keep one authoritative logon
+# trigger and remove the legacy duplicate during upgrades.
+Remove-Item -LiteralPath $shortcutPath -Force -ErrorAction SilentlyContinue
 
 # All-users logon scheduled task (fires for every account incl. admins; unlike
 # the StartUp folder it cannot be skipped with Shift). Recovery tokens are
@@ -146,10 +145,10 @@ $shortcut.Save()
 $lockAction = New-ScheduledTaskAction -Execute $uiPath
 $lockTrigger = New-ScheduledTaskTrigger -AtLogOn
 $lockPrincipal = New-ScheduledTaskPrincipal -GroupId 'S-1-1-0'
-$lockSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+$lockSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName 'EmiDeviceLockAll' -Action $lockAction -Trigger $lockTrigger -Principal $lockPrincipal -Settings $lockSettings -Force | Out-Null
 
-Write-Host 'EMI agent service installed; desktop companion is set to auto-launch on login.' -ForegroundColor Green
+Write-Host 'EMI agent service installed; desktop companion is set to auto-launch once at login.' -ForegroundColor Green
 if (-not $SkipUiLaunch) {
   . (Join-Path $PSScriptRoot 'Start-EmiCompanion.ps1')
   [void](Start-EmiCompanion -UiPath $uiPath)
