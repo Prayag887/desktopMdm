@@ -11,7 +11,8 @@ use uuid::Uuid;
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// True when the current account is a member of the local Administrators group
-/// (SID S-1-5-32-544). Authorized administrators are never restricted.
+/// (SID S-1-5-32-544). Administrators never get the enforced shell mode; an
+/// admin-panel LOCK still applies to them.
 pub(crate) fn current_user_is_admin() -> bool {
     Command::new("whoami")
         .args(["/groups", "/fo", "csv", "/nh"])

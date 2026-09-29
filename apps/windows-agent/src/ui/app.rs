@@ -61,7 +61,6 @@ pub(crate) struct DeviceApp {
     pub(crate) recovery_input: Zeroizing<String>,
     pub(crate) recovery_focused: bool,
     pub(crate) enforced: bool,
-    pub(crate) administrator: bool,
     pub(crate) lock_started: Option<Instant>,
     pub(crate) manual_lock: bool,
     pub(crate) remote_locked: bool,
@@ -87,10 +86,12 @@ impl DeviceApp {
         // demo, keeping an Exit button.
         let enforced = !is_admin && launched_as_user_shell();
         let remote_state = read_remote_state();
-        let remote_locked = !is_admin
-            && remote_state
-                .as_ref()
-                .is_some_and(|state| state.lock_state.state.is_locked());
+        // An admin-panel LOCK applies to every account on this PC, Windows
+        // administrators included; the admin UNLOCK or an offline recovery
+        // token releases it.
+        let remote_locked = remote_state
+            .as_ref()
+            .is_some_and(|state| state.lock_state.state.is_locked());
         let remote_lock_reason = remote_state
             .as_ref()
             .map_or_else(String::new, |state| state.lock_state.reason.clone());
@@ -120,7 +121,6 @@ impl DeviceApp {
             recovery_input: Zeroizing::new(String::new()),
             recovery_focused: false,
             enforced,
-            administrator: is_admin,
             lock_started: None,
             manual_lock: false,
             remote_locked,
@@ -175,9 +175,6 @@ impl DeviceApp {
     }
 
     fn sync_remote_lock_state(&mut self, context: &egui::Context) {
-        if self.administrator {
-            return;
-        }
         if self.last_remote_refresh.elapsed() < Duration::from_secs(2) {
             return;
         }

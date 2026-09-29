@@ -149,6 +149,19 @@ fn apply_pending_command(
     ack
 }
 
+/// True while the last applied admin state is `LOCKED`.
+#[cfg(windows)]
+pub(crate) fn device_locked() -> bool {
+    fs::read(
+        data_dir()
+            .map(|directory| directory.join("remote-state.json"))
+            .unwrap_or_default(),
+    )
+    .ok()
+    .and_then(|bytes| serde_json::from_slice::<SecuredRemoteState>(&bytes).ok())
+    .is_some_and(|state| state.remote.lock_state.state.is_locked())
+}
+
 fn load_command_security_state() -> anyhow::Result<CommandSecurityState> {
     let path = data_dir()?.join("remote-state.json");
     match fs::read(&path) {
