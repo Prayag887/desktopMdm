@@ -15,7 +15,9 @@
 #![allow(unsafe_code)]
 
 #[cfg(windows)]
-use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, GetLastError,
+};
 #[cfg(windows)]
 use windows::Win32::System::Threading::CreateMutexW;
 #[cfg(windows)]
@@ -45,6 +47,11 @@ pub fn already_running() -> bool {
             }
             already
         }
+        // An elevated instance (e.g. the one install.ps1 launches) creates the
+        // mutex with an administrators-only DACL, so a standard-token launch
+        // from the StartUp shortcut or logon task gets ACCESS_DENIED. The
+        // mutex exists, so another instance is running.
+        Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => true,
         Err(_) => {
             // If we can't even create the mutex, fail open rather than refuse
             // to show the lock screen at all.
