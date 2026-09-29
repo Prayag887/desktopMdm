@@ -51,7 +51,15 @@ struct CheckEnrollRequest<'a> {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct CheckEnrollResponse {
     pub enrolled: bool,
-    pub status: String,
+    /// The agent's current status, or `null` when no agent row exists yet.
+    pub status: Option<String>,
+}
+
+impl CheckEnrollResponse {
+    #[must_use]
+    pub fn status_label(&self) -> &str {
+        self.status.as_deref().unwrap_or("NONE")
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -141,6 +149,16 @@ struct AckRequest<'a> {
     applied: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_reason: Option<&'a str>,
+}
+
+/// The API rejects `failure_reason` longer than 500 characters.
+const MAX_FAILURE_REASON_CHARS: usize = 500;
+
+fn truncate_failure_reason(reason: &str) -> &str {
+    reason
+        .char_indices()
+        .nth(MAX_FAILURE_REASON_CHARS)
+        .map_or(reason, |(end, _)| &reason[..end])
 }
 
 pub struct AgentApi {
@@ -306,7 +324,7 @@ impl AgentApi {
             .bearer_auth(token)
             .json(&AckRequest {
                 applied,
-                failure_reason,
+                failure_reason: failure_reason.map(truncate_failure_reason),
             })
             .send()
             .context("acknowledge EMI command")?;
@@ -542,7 +560,7 @@ mod tests {
         server.join().unwrap();
 
         assert!(enrollment.enrolled);
-        assert_eq!(enrollment.status, "ACTIVE");
+        assert_eq!(enrollment.status.as_deref(), Some("ACTIVE"));
         let requests = requests.lock().unwrap();
         assert_eq!(requests[0].method, "POST");
         assert_eq!(requests[0].path, "/api/agent/check-enroll/");
@@ -684,5 +702,31 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("401 Unauthorized"));
         assert!(message.contains("bad token"));
+    }
+
+    #[test]
+    fn check_enrollment_accepts_a_null_status_for_unknown_serials() {
+        let (base_url, _requests, server) = spawn_server(vec![MockResponse::json(
+            "200 OK",
+            &serde_json::json!({"enrolled": false, "status": null}),
+        )]);
+        let enrollment = AgentApi::new(&base_url)
+            .unwrap()
+            .check_enrollment("SERIAL-123")
+            .unwrap();
+        server.join().unwrap();
+        assert!(!enrollment.enrolled);
+        assert_eq!(enrollment.status, None);
+        assert_eq!(enrollment.status_label(), "NONE");
+    }
+
+    #[test]
+    fn failure_reasons_fit_the_api_limit() {
+        let long = "é".repeat(MAX_FAILURE_REASON_CHARS + 20);
+        assert_eq!(
+            truncate_failure_reason(&long).chars().count(),
+            MAX_FAILURE_REASON_CHARS
+        );
+        assert_eq!(truncate_failure_reason("short"), "short");
     }
 }

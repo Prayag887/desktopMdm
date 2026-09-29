@@ -1,13 +1,14 @@
-//! Admin check-in and signed command-patch application.
+//! Admin check-in, lock-state application and command-patch acknowledgement.
 
 use super::storage::{data_dir, record_api_activity, write_json_safely};
 use anyhow::{Context, bail};
 use chrono::Utc;
 use emi_device_agent::agent_api::{
-    AgentApi, CommandAction, LockState, LockStateKind, PersistedRemoteState,
+    AgentApi, CheckInResponse, CommandAction, LockState, LockStateKind, PendingCommand,
+    PersistedRemoteState,
 };
 use emi_device_agent::command_security::{
-    CommandSecurityState, applied_security_state, verify_command_patch,
+    CommandSecurityState, applied_security_state, verify_command_patch, verify_patch_binding,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs};
@@ -42,43 +43,87 @@ pub(crate) fn synchronize_remote_state(
             return Err(error);
         }
     };
-    let Some(command) = check_in.pending_command else {
-        // A bare check-in state has no signature. It may refresh liveness but
-        // must never change an already-applied security state; every state
-        // transition is authorized by a signed command patch.
-        return refresh_remote_check_in(device_uuid, check_in.server_time);
-    };
-    let mut patch_uuid = None;
-    let result = (|| -> anyhow::Result<()> {
-        let patch = api
-            .current_patch(token)?
-            .context("server reported a pending command but returned no patch")?;
-        patch_uuid = Some(patch.uuid);
-        let security_state = load_command_security_state()?;
-        verify_command_patch(
+    let security_state = load_command_security_state()?;
+    // The check-in lock state is the admin panel's authoritative view of this
+    // device, received over HTTPS with this device's own bearer token. Apply
+    // it on every check-in so an admin LOCK/UNLOCK takes effect even when no
+    // command-signing key is provisioned or the command was already delivered.
+    persist_remote_state(&SecuredRemoteState {
+        remote: PersistedRemoteState {
             device_uuid,
-            &command,
-            &patch,
-            check_in.server_time.max(Utc::now()),
-            trusted_signing_keys,
-            &security_state,
-        )?;
+            lock_state: check_in.lock_state.clone(),
+            checked_at: Utc::now(),
+            server_time: check_in.server_time,
+        },
+        command_security: security_state.clone(),
+    })?;
+    let Some(command) = &check_in.pending_command else {
+        return Ok(());
+    };
+    apply_pending_command(
+        api,
+        token,
+        device_uuid,
+        &check_in,
+        command,
+        trusted_signing_keys,
+        &security_state,
+    )
+}
+
+/// Fetches the pending command's patch, applies its target state and acks it
+/// so the admin panel shows the command as applied (or why it failed).
+fn apply_pending_command(
+    api: &AgentApi,
+    token: &str,
+    device_uuid: Uuid,
+    check_in: &CheckInResponse,
+    command: &PendingCommand,
+    trusted_signing_keys: &BTreeMap<u64, String>,
+    security_state: &CommandSecurityState,
+) -> anyhow::Result<()> {
+    let patch = match api.current_patch(token) {
+        Ok(Some(patch)) => patch,
+        // 204: the command was superseded or completed since the check-in.
+        Ok(None) => return Ok(()),
+        Err(error) => {
+            record_api_activity(
+                "/api/agent/patch-files/current/",
+                format!("command={}", command.uuid),
+                format!("error: {error}"),
+            );
+            return Err(error);
+        }
+    };
+    let result = (|| -> anyhow::Result<()> {
+        let now = check_in.server_time.max(Utc::now());
+        // With a provisioned key, a patch must also carry a valid signature and
+        // pass replay checks. Without one, the authenticated check-in is the
+        // trust anchor and the patch only has to match the pending command.
+        let command_security = if trusted_signing_keys.is_empty() {
+            verify_patch_binding(command, &patch, now)?;
+            security_state.clone()
+        } else {
+            verify_command_patch(
+                device_uuid,
+                command,
+                &patch,
+                now,
+                trusted_signing_keys,
+                security_state,
+            )?;
+            applied_security_state(device_uuid, security_state, command, &patch)?
+        };
         api.verify_patch_download(token, &patch)?;
         if command.expires_at <= Utc::now() || patch.expires_at <= Utc::now() {
             bail!("command expired while downloading its patch");
         }
-        let state = command_target_state(command.action)?;
         persist_remote_state(&SecuredRemoteState {
-            command_security: applied_security_state(
-                device_uuid,
-                &security_state,
-                &command,
-                &patch,
-            )?,
+            command_security,
             remote: PersistedRemoteState {
                 device_uuid,
                 lock_state: LockState {
-                    state,
+                    state: command_target_state(command.action)?,
                     reason: command.reason.clone(),
                     changed_at: check_in.server_time,
                 },
@@ -87,41 +132,21 @@ pub(crate) fn synchronize_remote_state(
             },
         })
     })();
-    match result {
-        Ok(()) => api.acknowledge(
-            token,
-            patch_uuid.context("validated patch has no identifier")?,
-            true,
-            None,
-        ),
-        Err(error) => {
-            let reason = error.to_string();
-            if let Some(patch_uuid) = patch_uuid {
-                let _ = api.acknowledge(token, patch_uuid, false, Some(&reason));
-            }
-            Err(error)
-        }
-    }
-}
-
-fn refresh_remote_check_in(
-    device_uuid: Uuid,
-    server_time: chrono::DateTime<Utc>,
-) -> anyhow::Result<()> {
-    let path = data_dir()?.join("remote-state.json");
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error).context("read applied remote state"),
+    let (applied, reason) = match &result {
+        Ok(()) => (true, None),
+        Err(error) => (false, Some(format!("{error:#}"))),
     };
-    let mut state: SecuredRemoteState =
-        serde_json::from_slice(&bytes).context("decode applied remote state")?;
-    if state.remote.device_uuid != device_uuid {
-        bail!("applied remote state belongs to another device");
-    }
-    state.remote.checked_at = Utc::now();
-    state.remote.server_time = server_time;
-    persist_remote_state(&state)
+    let ack = api.acknowledge(token, patch.uuid, applied, reason.as_deref());
+    record_api_activity(
+        &format!("/api/agent/patch-files/{}/ack/", patch.uuid),
+        format!("action={:?}; applied={applied}", command.action),
+        match &ack {
+            Ok(()) => "success".into(),
+            Err(error) => format!("error: {error}"),
+        },
+    );
+    result?;
+    ack
 }
 
 fn load_command_security_state() -> anyhow::Result<CommandSecurityState> {

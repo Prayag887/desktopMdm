@@ -43,6 +43,31 @@ pub struct CommandSecurityState {
     pub consumed_nonce_sha256: BTreeSet<String>,
 }
 
+/// Checks that a patch belongs to the pending command and is still current.
+/// This is the part of verification that needs no signing key.
+///
+/// # Errors
+/// Returns an error for expired, mismatched, or malformed patches.
+pub fn verify_patch_binding(
+    command: &PendingCommand,
+    patch: &PatchFile,
+    server_time: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    if command.expires_at <= server_time || patch.expires_at <= server_time {
+        bail!("pending command or patch is expired");
+    }
+    if command.nonce.trim().is_empty() {
+        bail!("pending command has no nonce");
+    }
+    if patch.lock_command_uuid != command.uuid || patch.action != command.action {
+        bail!("patch metadata does not match the pending command");
+    }
+    if patch.version == 0 {
+        bail!("command patch version must be greater than zero");
+    }
+    Ok(())
+}
+
 /// Verifies identity, freshness, monotonic versioning, and an Ed25519 signature.
 ///
 /// `signed_payload` is a base64-encoded detached Ed25519 signature over the
@@ -60,18 +85,7 @@ pub fn verify_command_patch(
     trusted_keys: &BTreeMap<u64, String>,
     state: &CommandSecurityState,
 ) -> anyhow::Result<()> {
-    if command.expires_at <= server_time || patch.expires_at <= server_time {
-        bail!("pending command or patch is expired");
-    }
-    if command.nonce.trim().is_empty() {
-        bail!("pending command has no nonce");
-    }
-    if patch.lock_command_uuid != command.uuid || patch.action != command.action {
-        bail!("patch metadata does not match the pending command");
-    }
-    if patch.version == 0 {
-        bail!("command patch version must be greater than zero");
-    }
+    verify_patch_binding(command, patch, server_time)?;
 
     let message = canonical_patch_message(device_uuid, command, patch)?;
     let message_digest = format!("{:x}", Sha256::digest(message.as_bytes()));

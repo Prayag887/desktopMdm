@@ -1,6 +1,6 @@
 # Backend signed-command implementation checklist
 
-The Windows agent rejects unsigned, expired, altered, replayed, or incorrectly targeted remote transitions. The backend must complete this work before signed device control is enabled in production.
+The Windows agent applies the check-in `lock_state` directly, so admin lock/unlock works without signing. Once a command-signing public key is provisioned on devices, the agent additionally rejects unsigned, expired, altered, replayed, or incorrectly targeted command patches (and acks them as failed). The backend must complete this work before provisioning that key in production.
 
 ## Key custody and rotation
 

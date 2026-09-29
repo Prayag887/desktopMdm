@@ -94,7 +94,7 @@ pub(crate) fn check_or_enroll_config(
                 checked_at: Utc::now(),
                 device_serial_no: serial.clone(),
                 enrolled: Some(enrollment.enrolled),
-                status: Some(enrollment.status.clone()),
+                status: enrollment.status.clone(),
                 error: None,
             });
             record_api_activity(
@@ -102,7 +102,8 @@ pub(crate) fn check_or_enroll_config(
                 format!("device_serial_no={serial}"),
                 format!(
                     "enrolled={}; status={}",
-                    enrollment.enrolled, enrollment.status
+                    enrollment.enrolled,
+                    enrollment.status_label()
                 ),
             );
             enrollment
@@ -128,10 +129,14 @@ pub(crate) fn check_or_enroll_config(
         if config.agent_token.is_none() || config.remote_device_id.is_none() {
             bail!(
                 "the server reports BIOS serial {serial} is enrolled ({}) but this Windows installation has no local agent credentials; an administrator must reset or reissue enrollment",
-                enrollment.status
+                enrollment.status_label()
             );
         }
-        info!(serial, status = %enrollment.status, "device enrollment confirmed by EMI admin API");
+        info!(
+            serial,
+            status = enrollment.status_label(),
+            "device enrollment confirmed by EMI admin API"
+        );
         return Ok(());
     }
 
@@ -139,7 +144,11 @@ pub(crate) fn check_or_enroll_config(
     // once it says this serial is not enrolled; doing so produced misleading
     // 401 events ahead of the enrollment decision in the restriction UI.
     clear_enrollment_credentials(config)?;
-    info!(serial, status = %enrollment.status, "device is not enrolled; starting enrollment");
+    info!(
+        serial,
+        status = enrollment.status_label(),
+        "device is not enrolled; starting enrollment"
+    );
     let server = config.api_base.clone();
     enroll_config(config, &server)
 }
