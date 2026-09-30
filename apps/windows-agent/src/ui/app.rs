@@ -95,15 +95,13 @@ impl DeviceApp {
         let remote_lock_reason = remote_state
             .as_ref()
             .map_or_else(String::new, |state| state.lock_state.reason.clone());
-        let mut app = Self {
+        Self {
             health: read_health(),
             service_running: false,
             service_probe: Some(probe_service_running()),
-            // A persisted command state can outlive enrollment credentials
-            // (for example after an incomplete reinstall). It is not proof
-            // that this Windows installation is enrolled, so wait for the
-            // launch-time enrollment/check-in result instead.
-            status: "Starting device enrollment and administrator check-in…".into(),
+            // Enrollment and check-in run in the SYSTEM service; launching the
+            // UI must not raise a UAC prompt to repeat them.
+            status: "Enrollment and check-in are handled by the EMI service.".into(),
             result_rx: None,
             operation_progress: None,
             operation_label: String::new(),
@@ -134,9 +132,7 @@ impl DeviceApp {
             keyboard_disabled: false,
             unlock_fail_count: 0,
             unlock_locked_until: None,
-        };
-        app.sync_enrollment_on_launch();
-        app
+        }
     }
 
     pub(crate) fn clear_passwords(&mut self) {

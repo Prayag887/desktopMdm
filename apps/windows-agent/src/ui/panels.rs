@@ -646,38 +646,6 @@ impl DeviceApp {
         });
     }
 
-    /// Trigger an immediate enrollment/check-in when the desktop UI opens.
-    /// The service still performs its own boot/resume heartbeats; this covers
-    /// an already-open Windows session and gives the UI a truthful result.
-    pub(crate) fn sync_enrollment_on_launch(&mut self) {
-        let (tx, rx) = mpsc::channel();
-        self.result_rx = Some(rx);
-        thread::spawn(move || {
-            let result = agent_path().and_then(|agent| {
-                let script = format!(
-                    "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath '{}' -ArgumentList 'run','--once','--auto-enroll' -Verb RunAs -PassThru -Wait; exit $p.ExitCode",
-                    agent.to_string_lossy().replace('\'', "''")
-                );
-                Command::new("powershell.exe")
-                    .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .status()
-                    .map_err(|error| error.to_string())
-            })
-            .map_or_else(
-                |error| format!("Enrollment/check-in could not start: {error}"),
-                |status| {
-                    if status.success() {
-                        "Device enrollment verified and administrator check-in completed.".into()
-                    } else {
-                        format!("Device is not enrolled or its initial check-in failed: {status}")
-                    }
-                },
-            );
-            let _ = tx.send(OperationEvent::Finished(result));
-        });
-    }
-
     pub(crate) fn reload(&mut self) {
         self.health = read_health();
         if self.service_probe.is_none() {
