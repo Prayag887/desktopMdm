@@ -13,7 +13,7 @@ function Copy-ProtectionPackage([string]$Source, [string]$Destination, [bool]$Un
     }
     Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $Destination 'protection-manifest.ps1') -Force
   } elseif ($Unsigned) {
-    Get-ChildItem -LiteralPath $Source -File | Where-Object { $_.Extension -in @('.exe','.ps1','.cmd','.hex') } | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $Destination $_.Name) -Force }
+    Get-ChildItem -LiteralPath $Source -File | Where-Object { $_.Extension -in @('.exe','.ps1','.cmd','.hex','.cer') } | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $Destination $_.Name) -Force }
   } else { throw 'Signed package manifest required' }
 }
 function Initialize-ProtectionRepairCache([string]$Source, [string]$DataDir, [string]$Publisher) {

@@ -10,6 +10,14 @@ if %errorlevel% neq 0 (
   exit /b
 )
 
+rem Trust only the pinned public code-signing certificate; UAC authorizes this device change.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-PublisherTrust.ps1"
+if errorlevel 1 (
+  echo Publisher certificate installation FAILED. Application installation was not started.
+  pause
+  exit /b 1
+)
+
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
 set "INSTALL_EXIT=%ERRORLEVEL%"
 echo.

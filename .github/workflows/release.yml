@@ -28,8 +28,18 @@ jobs:
       SIGN_PFX_BASE64: ${{ secrets.CODE_SIGN_PFX_BASE64 }}
       SIGN_PFX_PASSWORD: ${{ secrets.CODE_SIGN_PFX_PASSWORD }}
       SIGN_CERT_SHA1: ${{ vars.CODE_SIGN_CERT_SHA1 }}
+      PRIVATE_TRUST: ${{ vars.CODE_SIGN_PRIVATE_TRUST }}
     steps:
       - uses: actions/checkout@v6
+      - name: Trust the repository private signing identity on this runner
+        if: env.PRIVATE_TRUST == 'true' && env.ALLOW_UNSIGNED != 'true'
+        shell: pwsh
+        run: |
+          ./packaging/windows/Install-PublisherTrust.ps1
+          $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new((Resolve-Path packaging/windows/emi-publisher.cer).Path)
+          try {
+            if ($certificate.Thumbprint -ne $env:SIGN_CERT_SHA1) { throw 'Configured signing identity does not match the pinned certificate' }
+          } finally { $certificate.Dispose() }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -63,6 +73,7 @@ jobs:
           ./packaging/windows/tests/Test-ProtectionAcl.ps1
           ./packaging/windows/tests/Test-SecurityPosture.ps1
           ./packaging/windows/tests/Test-UntrustedRepair.ps1
+          ./packaging/windows/tests/Test-PublisherTrust.ps1
       - name: Verify binaries do not require the Visual C++ runtime
         shell: pwsh
         run: |
@@ -106,6 +117,7 @@ jobs:
           Copy-Item packaging/windows/*.ps1 dist/emi-device-agent-windows-x64/
           Copy-Item packaging/windows/*.cmd dist/emi-device-agent-windows-x64/
           Copy-Item packaging/windows/recovery-public-key.hex dist/emi-device-agent-windows-x64/
+          Copy-Item packaging/windows/emi-publisher.cer dist/emi-device-agent-windows-x64/
           Copy-Item packaging/windows/intune dist/emi-device-agent-windows-x64/intune -Recurse
           Copy-Item README.md,LICENSE dist/emi-device-agent-windows-x64/
           if ($env:ALLOW_UNSIGNED -eq 'true') {
@@ -113,7 +125,7 @@ jobs:
           }
           # Hash final binaries and all executable scripts, then authenticate the manifest.
           $manifest = [ordered]@{}
-          Get-ChildItem dist/emi-device-agent-windows-x64 -File | Where-Object { $_.Extension -in @('.exe','.ps1','.cmd','.hex') } | Sort-Object Name | ForEach-Object {
+          Get-ChildItem dist/emi-device-agent-windows-x64 -File | Where-Object { $_.Extension -in @('.exe','.ps1','.cmd','.hex','.cer') } | Sort-Object Name | ForEach-Object {
             $manifest[$_.Name] = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           }
           $manifestPath = 'dist/emi-device-agent-windows-x64/protection-manifest.ps1'
@@ -144,7 +156,7 @@ jobs:
           draft: false
           name: ${{ github.ref_name }}
           body: >-
-            ${{ env.ALLOW_UNSIGNED == 'true' && '**Unsigned release:** These executables have no verified publisher signature. Windows may show an unknown publisher or SmartScreen warning. See UNSIGNED.txt in the download.' || '' }}
+            ${{ env.ALLOW_UNSIGNED == 'true' && '**Unsigned release:** These executables have no verified publisher signature. Windows may show an unknown publisher or SmartScreen warning. See UNSIGNED.txt in the download.' || (env.PRIVATE_TRUST == 'true' && '**Private publisher signature:** Signed with the repository self-issued certificate. Run install.cmd as administrator to install the pinned public certificate before installing the app. This is not a publicly trusted publisher identity.' || '') }}
           generate_release_notes: true
           prerelease: ${{ env.ALLOW_UNSIGNED == 'true' }}
           files: |

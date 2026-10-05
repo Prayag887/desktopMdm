@@ -23,6 +23,8 @@ pub const REQUIRED: &[&str] = &[
     "Set-EmiStateAcl.ps1",
     "Protection-Transaction.ps1",
     "Protection-Package.ps1",
+    "Install-PublisherTrust.ps1",
+    "emi-publisher.cer",
     "install.ps1",
     "uninstall.ps1",
 ];

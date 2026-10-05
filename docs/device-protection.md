@@ -108,3 +108,11 @@ The current `install.cmd` preserves WinRE and BCD. Earlier versions disabled rec
 - `packaging/windows/tests/Test-SecurityPosture.ps1`
 - `packaging/windows/tests/Test-UntrustedRepair.ps1`
 - `packaging/windows/uninstall.ps1`
+
+## Private signing identity
+
+The release uses a persistent self-issued RSA code-signing certificate valid until October 2031. Its public `emi-publisher.cer` is packaged and its SHA-256 fingerprint is pinned in `Install-PublisherTrust.ps1`. `install.cmd` first obtains normal administrator elevation, then imports only that certificate into LocalMachine Root and TrustedPublisher before invoking the installer. The Intune SYSTEM wrapper performs the same step. Direct PowerShell deployments must run `Install-PublisherTrust.ps1` first on a new machine.
+
+The public certificate is restricted to code signing and is not a certificate authority. The helper validates its fingerprint, usage, validity and lack of private material, verifies both stores, is idempotent, and removes newly added entries if import fails. It never downloads certificates or imports an arbitrary package certificate. Administrator-authorized trust is established from a trusted release download; this does not create a globally recognized publisher or guarantee SmartScreen reputation.
+
+The PFX/private key and password are GitHub Actions secrets (`CODE_SIGN_PFX_BASE64`, `CODE_SIGN_PFX_PASSWORD`), never repository/release files. `CODE_SIGN_CERT_SHA1` identifies the signer; `CODE_SIGN_PRIVATE_TRUST=true` enables runner trust for this private identity. Keep an encrypted offline recovery copy and use the same identity across releases. A new random certificate per build would break update trust. A compromised key requires administrator-led revocation/removal from both certificate stores and deployment of a new identity. Uninstall does not automatically remove publisher trust because other approved installs/versions may still depend on it.
