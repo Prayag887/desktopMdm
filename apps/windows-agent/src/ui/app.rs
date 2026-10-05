@@ -344,8 +344,9 @@ mod tests {
     #[test]
     fn app_loads_and_renders_while_waiting_for_management() {
         let app = DeviceApp::load();
+        let status = app.status.to_ascii_lowercase();
         assert!(
-            app.status.contains("administrator") || app.status.contains("enrollment"),
+            status.contains("administrator") || status.contains("enrollment"),
             "the UI should explain its management state"
         );
         let context = egui::Context::default();
