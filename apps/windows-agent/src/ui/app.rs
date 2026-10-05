@@ -41,6 +41,8 @@ impl BiosPasswordAction {
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct DeviceApp {
     pub(crate) health: Option<DeviceHealth>,
+    pub(crate) protection: Option<crate::protection::model::DeviceProtectionStatus>,
+    pub(crate) protection_error: Option<String>,
     pub(crate) service_running: bool,
     pub(crate) service_probe: Option<Receiver<bool>>,
     pub(crate) status: String,
@@ -97,6 +99,8 @@ impl DeviceApp {
             .map_or_else(String::new, |state| state.lock_state.reason.clone());
         Self {
             health: read_health(),
+            protection: super::protection::read_status(),
+            protection_error: super::protection::read_error(),
             service_running: false,
             service_probe: Some(probe_service_running()),
             // Enrollment and check-in run in the SYSTEM service; launching the
@@ -212,6 +216,8 @@ impl eframe::App for DeviceApp {
         context.request_repaint_after(Duration::from_secs(2));
         if self.last_refresh.elapsed() >= Duration::from_secs(5) {
             self.health = read_health();
+            self.protection = super::protection::read_status();
+            self.protection_error = super::protection::read_error();
             self.last_refresh = Instant::now();
         }
         if let Some(receiver) = &self.result_rx {
@@ -272,6 +278,7 @@ impl eframe::App for DeviceApp {
                     ui.colored_label(color, label);
                     ui.add_space(12.0);
                     self.render_health(ui);
+                    self.render_protection(ui);
                     ui.add_space(16.0);
                     ui.horizontal_wrapped(|ui| {
                         if ui

@@ -11,3 +11,5 @@ pub mod recovery_service;
 pub mod state_store;
 #[cfg(windows)]
 pub mod ui;
+
+pub mod protection;

@@ -26,6 +26,9 @@ pub(crate) fn run(once: bool, auto_enroll: bool) -> anyhow::Result<()> {
     if auto_enroll && !once {
         spawn_recovery_worker(data_dir()?, config.device_id);
     }
+    if cfg!(windows) && !once {
+        spawn_protection_worker(data_dir()?);
+    }
     let mut next_health = Instant::now();
     let mut next_check_in = Instant::now();
     let mut next_enrollment = Instant::now();
@@ -156,6 +159,29 @@ fn spawn_recovery_worker(directory: std::path::PathBuf, device_id: uuid::Uuid) {
                 std::thread::sleep(Duration::from_secs(5));
             }
             std::thread::sleep(Duration::from_secs(1));
+        }
+    });
+}
+
+/// Slow posture probes never delay enrollment, check-in, or lock-screen monitoring.
+fn spawn_protection_worker(directory: std::path::PathBuf) {
+    std::thread::spawn(move || {
+        while !STOP_REQUESTED.load(Ordering::Relaxed) {
+            match emi_device_agent::protection::snapshot::refresh(&directory) {
+                Ok(()) => {
+                    let _ = fs::remove_file(directory.join("protection-error.json"));
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "device protection verification failed");
+                    emi_device_agent::protection::snapshot::record_failure(&directory, &error);
+                }
+            }
+            for _ in 0..300 {
+                if STOP_REQUESTED.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
         }
     });
 }

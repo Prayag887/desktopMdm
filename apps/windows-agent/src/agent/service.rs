@@ -33,7 +33,7 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
         service_control_handler::{self, ServiceControlHandlerResult},
     };
     let handler = move |control| match control {
-        ServiceControl::Stop => {
+        ServiceControl::Stop | ServiceControl::Shutdown => {
             STOP_REQUESTED.store(true, Ordering::Relaxed);
             ServiceControlHandlerResult::NoError
         }
@@ -56,7 +56,9 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
     let running = ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: ServiceState::Running,
-        controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::POWER_EVENT,
+        controls_accepted: ServiceControlAccept::STOP
+            | ServiceControlAccept::SHUTDOWN
+            | ServiceControlAccept::POWER_EVENT,
         exit_code: ServiceExitCode::Win32(0),
         checkpoint: 0,
         wait_hint: Duration::ZERO,
@@ -65,6 +67,7 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
     if handle.set_service_status(running).is_err() {
         return;
     }
+    tracing::info!(event = "service_started", service = "EmiDeviceAgent");
     let exit_code = match run(false, true) {
         Ok(()) => 0,
         Err(error) => {
@@ -72,6 +75,11 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
             1
         }
     };
+    tracing::info!(
+        event = "service_stopped",
+        service = "EmiDeviceAgent",
+        exit_code
+    );
     let _ = handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: ServiceState::Stopped,

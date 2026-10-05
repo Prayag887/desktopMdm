@@ -65,10 +65,15 @@ enum AgentCommand {
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    if matches!(cli.command, AgentCommand::Service) {
+        emi_device_agent::protection::logging::initialize("core")?;
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .init();
+    }
+    match cli.command {
         AgentCommand::Init => {
             initialize()?;
             Ok(())

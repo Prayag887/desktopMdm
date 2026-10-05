@@ -12,3 +12,5 @@ mod panels;
 mod system;
 
 pub use app::run;
+
+mod protection;

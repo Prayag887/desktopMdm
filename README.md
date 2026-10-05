@@ -53,7 +53,7 @@ For installation, open PowerShell as administrator in the extracted folder:
 .\\install.ps1
 ```
 
-The installer copies both binaries, reads the BIOS serial, enrolls with `https://emi-api.yajtech.com`, collects health, installs the automatic service, creates the UI startup shortcut, and opens the window. Enrollment uses the one-time pending-agent workflow documented by the API; no admin username or password is stored on the PC. Production deployment must also pass `-CommandSigningKeyId` and `-CommandSigningPublicKey`; without a trusted public key, remote state transitions deliberately fail closed.
+The installer copies the core, UI, watchdog and updater binaries, reads the BIOS serial, enrolls with `https://emi-api.yajtech.com`, collects health, installs the automatic service, creates the UI startup shortcut, and opens the window. Enrollment uses the one-time pending-agent workflow documented by the API; no admin username or password is stored on the PC. Production deployment must also pass `-CommandSigningKeyId` and `-CommandSigningPublicKey`; without a trusted public key, remote state transitions deliberately fail closed.
 
 WinGet bootstrap downloads Microsoft Desktop App Installer only when WinGet is missing. For an offline install or when bootstrap is unwanted:
 
@@ -109,37 +109,11 @@ packaging/windows/  Installer and uninstaller
 
 See [production-hardening.md](docs/production-hardening.md) for recovery-key custody, command-signing integration, mandatory release signing, and staged BitLocker/LAPS/App Control deployment. There is no shared unlock word or built-in lab-key fallback.
 
-## Windows recovery configuration (v0.6.38)
+## Device protection and Windows recovery
 
-After `install.ps1` succeeds, the elevated `install.cmd` first exports the BCD
-store to `C:\bcd-backup`, then runs `reagentc /disable` and `reagentc /info`.
-It sets `recoveryenabled No` and `bootstatuspolicy IgnoreAllFailures` for both
-`{current}` and `{default}`. It then sets the `ShutdownWithoutLogon` DWORD to
-`0` under `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`,
-disabling shutdown without logging on. It also deletes `recoverysequence` for both
-boot entries, disables `advancedoptions` and `optionsedit` for `{globalsettings}`,
-sets the current boot menu policy to `Standard`, and sets the boot timeout to `0`.
-Deletion failures are reported as warnings because WinRE may already have removed
-the recovery-sequence values. Other BCD failures stop configuration.
-Final diagnostics print WinRE and BCD settings, Secure Boot, TPM, and BitLocker
-status. These queries do not enable Secure Boot, provision a TPM, or encrypt C:.
-Unsupported or failed hardware-status queries are reported as warnings.
-The registry write overwrites an existing
-value without prompting and returns a nonzero exit code on failure.
-If the BCD export fails, recovery settings are not
-changed. A failed recovery command or required BCD command stops configuration with a nonzero exit code
-and explicitly reports that the agent has already been installed. Failed agent
-installation does not change Windows RE through this wrapper. Running
-`install.ps1` directly does not apply this recovery configuration.
+See [Device protection](docs/device-protection.md) for the independent LocalSystem watchdog, exact ACL policy, signed integrity manifest, cached BitLocker/TPM/Secure Boot status, maintenance commands and Windows acceptance tests. Signed production packages are required; `install.ps1 -AllowUnsigned` is a development opt-in with degraded protection.
 
-Disabling Windows RE removes the built-in recovery environment and prevents
-Windows Autopilot Reset, which requires WinRE. It does not prevent a clean OS
-installation or disk replacement. Retain an administrator account and external
-Windows recovery media. An administrator can restore recovery with
-`reagentc /enable`, then check `reagentc /info`; uninstalling the agent does not
-restore WinRE automatically. The BCD settings are separate from WinRE; enabling
-WinRE alone does not undo them. The pre-change BCD store is saved at
-`C:\bcd-backup` for administrator recovery. See [Microsoft's Autopilot Reset prerequisites](https://learn.microsoft.com/en-us/autopilot/windows-autopilot-reset).
+The installer preserves Windows Recovery, BCD, firmware and existing BitLocker protectors. Earlier `install.cmd` versions disabled recovery; administrators must review historical boot settings and restore WinRE as described in the protection guide.
 
 ## Installer enrollment and desktop-launch warnings
 

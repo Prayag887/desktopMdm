@@ -52,3 +52,12 @@ jobs:
       - name: Verify optional desktop launch failure handling
         shell: pwsh
         run: ./packaging/windows/tests/Test-CompanionLaunch.ps1
+      - name: Verify installation ACL protection
+        shell: pwsh
+        run: ./packaging/windows/tests/Test-ProtectionAcl.ps1
+      - name: Verify security posture providers and safe provisioning
+        shell: pwsh
+        run: ./packaging/windows/tests/Test-SecurityPosture.ps1
+      - name: Reject unauthenticated repair packages
+        shell: pwsh
+        run: ./packaging/windows/tests/Test-UntrustedRepair.ps1
