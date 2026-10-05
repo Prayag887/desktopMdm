@@ -47,6 +47,22 @@ jobs:
             throw 'Production release blocked: configure CODE_SIGN_PFX_BASE64, CODE_SIGN_PFX_PASSWORD, and CODE_SIGN_CERT_SHA1, or integrate your managed signing service. For an explicitly labeled unsigned release, manually dispatch this workflow on the version tag with allow_unsigned enabled.'
           }
       - run: cargo build --locked --release --package emi-device-agent
+      - name: Test Windows agent before publishing
+        run: cargo test --locked --package emi-device-agent
+      - name: Verify Windows scripts and protection checks
+        shell: pwsh
+        run: |
+          Get-ChildItem packaging/windows -Filter *.ps1 -Recurse | ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
+          }
+          ./packaging/windows/tests/Test-StateAcl.ps1 -AgentPath ./target/debug/emi-device-agent.exe
+          ./packaging/windows/tests/Test-CompanionLaunch.ps1
+          ./packaging/windows/tests/Test-ProtectionAcl.ps1
+          ./packaging/windows/tests/Test-SecurityPosture.ps1
+          ./packaging/windows/tests/Test-UntrustedRepair.ps1
       - name: Verify binaries do not require the Visual C++ runtime
         shell: pwsh
         run: |
@@ -130,6 +146,7 @@ jobs:
           body: >-
             ${{ env.ALLOW_UNSIGNED == 'true' && '**Unsigned release:** These executables have no verified publisher signature. Windows may show an unknown publisher or SmartScreen warning. See UNSIGNED.txt in the download.' || '' }}
           generate_release_notes: true
+          prerelease: ${{ env.ALLOW_UNSIGNED == 'true' }}
           files: |
             dist/emi-device-agent-windows-x64.zip
             dist/SHA256SUMS.txt
