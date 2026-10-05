@@ -34,8 +34,18 @@ function Verify-ProtectionAcl([string]$Path) {
   foreach ($item in Get-ProtectionItems $Path) {
     $expected = Get-ProtectionAcl $item.FullName
     $actual = Get-Acl -LiteralPath $item.FullName
-    $sections = [Security.AccessControl.AccessControlSections]'Access,Owner'
-    if ($actual.GetSecurityDescriptorSddlForm($sections) -ne $expected.GetSecurityDescriptorSddlForm($sections)) { $failures += $item.FullName }
+    # Windows may normalize descriptor control flags and ACE order when persisting.
+    # Compare the security policy, including every rule's inheritance and rights.
+    $valid = $actual.AreAccessRulesProtected -and
+      $actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -eq 'S-1-5-32-544'
+    $rules = foreach ($acl in @($actual, $expected)) {
+      $entries = foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        '{0}:{1}:{2}:{3}:{4}:{5}' -f $rule.IdentityReference.Value, [int64]$rule.FileSystemRights,
+          $rule.AccessControlType, $rule.InheritanceFlags, $rule.PropagationFlags, $rule.IsInherited
+      }
+      ($entries | Sort-Object) -join ';'
+    }
+    if (-not $valid -or $rules[0] -ne $rules[1]) { $failures += $item.FullName }
   }
   [pscustomobject]@{ path = $Path; verified = ($failures.Count -eq 0); failures = $failures; strategy = 'SYSTEM/Admin FullControl; Users ReadAndExecute; protected DACL; Admin owner' }
 }

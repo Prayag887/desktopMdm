@@ -22,6 +22,16 @@ try {
   Set-Acl $binary $acl
   if ((Verify-ProtectionAcl $program).verified) { throw 'Tampered ACL was accepted' }
   Repair-ProtectionAcl $program | Out-Null
+  $acl=Get-Acl $binary
+  $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-18'))
+  Set-Acl $binary $acl
+  if ((Verify-ProtectionAcl $program).verified) { throw 'Unexpected owner was accepted' }
+  Repair-ProtectionAcl $program | Out-Null
+  $acl=Get-Acl $program
+  $acl.SetAccessRuleProtection($false,$true)
+  Set-Acl $program $acl
+  if ((Verify-ProtectionAcl $program).verified) { throw 'Unprotected DACL was accepted' }
+  Repair-ProtectionAcl $program | Out-Null
   $output=Join-Path $root 'result.json'; [IO.File]::WriteAllText($output,''); Set-EmiAcl $output -Mailbox $true
   $password=ConvertTo-SecureString ('A!a9'+[Guid]::NewGuid().ToString('N')) -AsPlainText -Force
   New-LocalUser -Name $name -Password $password -AccountNeverExpires | Out-Null
