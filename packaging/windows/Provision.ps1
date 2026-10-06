@@ -19,12 +19,14 @@
 param(
   [Parameter(Mandatory = $true)][string]$EnrolledUser,
   [string]$InstallDir = "$env:ProgramFiles\EmiDeviceAgent",
-  [switch]$WithWinget
+  [switch]$WithWinget,
+  [switch]$SkipUiLaunch
 )
 $ErrorActionPreference = 'Stop'
 
 $options=@()
 if (-not $WithWinget) { $options += '-SkipWingetBootstrap' }
+if ($SkipUiLaunch) { $options += '-SkipUiLaunch' }
 $powershell=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 & $powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Start-EmiInstaller.ps1') -InstallDir $InstallDir @options
 $result=$LASTEXITCODE

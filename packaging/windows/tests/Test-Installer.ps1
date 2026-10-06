@@ -19,7 +19,7 @@ try {
   $identity=$config.device_id
   $config.api_base='https://127.0.0.1:9'
   [IO.File]::WriteAllText($configPath,($config | ConvertTo-Json -Depth 8))
-  foreach ($attempt in 1,2) {
+  foreach ($attempt in 1,2,3) {
     if ($attempt -eq 1) {
       # Exercise the actual .cmd; NUL answers its final pause on the CI runner.
       $command='""' + (Join-Path $package 'install.cmd') + '" -SkipWingetBootstrap -SkipUiLaunch <NUL"'
@@ -29,6 +29,9 @@ try {
       $start.Arguments='/d /s /c '+$command
       $child=[Diagnostics.Process]::Start($start)
       try { $child.WaitForExit(); $exitCode=$child.ExitCode } finally { $child.Dispose() }
+    } elseif ($attempt -eq 3) {
+      & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Provision.ps1') -EnrolledUser InstallerTest -SkipUiLaunch
+      $exitCode=$LASTEXITCODE
     } else {
       & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Start-EmiInstaller.ps1') -SkipWingetBootstrap -SkipUiLaunch
       $exitCode=$LASTEXITCODE
