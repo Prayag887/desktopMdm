@@ -12,7 +12,7 @@ use std::{
 pub const REQUIRED: &[&str] = &[
     "emi-device-agent.exe",
     "emi-device-ui.exe",
-    "emi-device-watchdog.exe",
+    "RepairWatchdog.exe",
     "emi-device-updater.exe",
     "Get-DeviceProtection.ps1",
     "Protection-Acl.ps1",

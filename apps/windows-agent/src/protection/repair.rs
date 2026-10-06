@@ -18,9 +18,10 @@ pub fn dispatch(installation: &Path, state: &Path) -> anyhow::Result<()> {
             .as_str()
             .context("missing repair package")?,
     );
-    let root = PathBuf::from(std::env::var_os("PROGRAMDATA").context("ProgramData missing")?)
-        .join("EmiDeviceAgentRepair");
-    if source.parent() != Some(root.as_path())
+    let data_root = PathBuf::from(std::env::var_os("PROGRAMDATA").context("ProgramData missing")?);
+    let root = data_root.join("RepairWatchdog");
+    let legacy_root = data_root.join("EmiDeviceAgentRepair");
+    if (source.parent() != Some(root.as_path()) && source.parent() != Some(legacy_root.as_path()))
         || !source.file_name().is_some_and(|name| {
             let name = name.to_string_lossy();
             name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit())
@@ -28,7 +29,7 @@ pub fn dispatch(installation: &Path, state: &Path) -> anyhow::Result<()> {
     {
         bail!("repair cache is outside the fixed protected cache root");
     }
-    if !acl::verify_protection_acl(&root)?.verified
+    if !acl::verify_protection_acl(source.parent().context("missing cache root")?)?.verified
         || !integrity::verify_installation(&source)?.verified
     {
         bail!("untrusted repair package");

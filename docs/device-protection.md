@@ -4,7 +4,7 @@ The existing core service owns enrollment, signed commands, lock-state synchroni
 
 ## File responsibilities
 
-`apps/windows-agent/src/protection/` contains `model.rs` (wire models/status aggregation), `acl.rs` (compiled-in ACL operations), `integrity.rs` (manifest validation/streaming SHA-256), `windows.rs` (bounded Windows helper processes), `retry.rs` (recovery budget), `watchdog.rs` (independent SCM monitor), `repair.rs` (authenticated cache dispatch and durable retry ledger), `snapshot.rs` (service-owned status publication) and `logging.rs` (bounded structured logs). `src/ui/protection.rs` renders cached diagnostics. `src/bin/emi-device-watchdog.rs` is the watchdog entry point; `src/bin/emi-device-updater.rs` is the separate elevated repair executor.
+`apps/windows-agent/src/protection/` contains `model.rs` (wire models/status aggregation), `acl.rs` (compiled-in ACL operations), `integrity.rs` (manifest validation/streaming SHA-256), `windows.rs` (bounded Windows helper processes), `retry.rs` (recovery budget), `watchdog.rs` (independent SCM monitor), `repair.rs` (authenticated cache dispatch and durable retry ledger), `snapshot.rs` (service-owned status publication) and `logging.rs` (bounded structured logs). `src/ui/protection.rs` renders cached diagnostics. `src/bin/RepairWatchdog.rs` is the watchdog entry point; `src/bin/emi-device-updater.rs` is the separate elevated repair executor.
 
 The packaging files have separate responsibilities: `Protection-Acl.ps1` for program ACLs, `Set-EmiStateAcl.ps1` for private state and the recovery mailbox, `Protection-Integrity.ps1` for package authentication, `Protection-Package.ps1` for immutable artifact installation/repair caching, `Protection-Transaction.ps1` for backup/rollback, `Get-SecurityPosture.ps1` for hardware/volume queries, `Get-DeviceProtection.ps1` for aggregation, `Provision-BitLocker.ps1` for explicit encryption provisioning and `Maintain-Protection.ps1` for authorized servicing. Installer, uninstaller, CI and release packaging integrate these components. The ACL implementations are embedded in Rust binaries so repair never executes a helper from a damaged installation.
 
@@ -14,7 +14,7 @@ The packaging files have separate responsibilities: `Protection-Acl.ps1` for pro
 
 The watchdog checks SCM status, configuration identity and health-file freshness every 30 seconds. Installation hashes, registration and ACL checks occur every five minutes and immediately before restarting a stopped service. The watchdog allows five attempts with delays of 30/60/120/240/480 seconds, resets only after five healthy minutes, and never kills a running core. A stale core heartbeat is reported for administrator investigation. Neither service relaunches the other. Integrity failure refuses watchdog restart and records the affected files. SCM recovery is independent of watchdog recovery and does not itself authenticate executable signatures; use Windows Defender Application Control for OS-enforced publisher restrictions.
 
-The installer caches a verified release under `ProgramData\EmiDeviceAgentRepair\<manifest-hash>` with protected ACLs, and records the source in private `repair-source.json`. Missing/corrupt files dispatch the verified cached updater as a separate process so installation can stop the watchdog without a deadlock. Cache ACLs, publisher signature and all hashes are verified before execution. A durable `repair-attempts.json` ledger caps repair at five attempts with exponential cooldowns starting at five minutes, survives service reinstalls, and resets after five uninterrupted healthy minutes. An absent/untrusted cache requires administrator repair. There is no remote executable download protocol. Protection events are recorded locally rather than sent to an invented backend endpoint. Existing health/check-in schemas remain compatible.
+The installer caches a verified release under `ProgramData\RepairWatchdog\<manifest-hash>` with protected ACLs, and records the source in private `repair-source.json`. Missing/corrupt files dispatch the verified cached updater as a separate process so installation can stop the watchdog without a deadlock. Cache ACLs, publisher signature and all hashes are verified before execution. A durable `repair-attempts.json` ledger caps repair at five attempts with exponential cooldowns starting at five minutes, survives service reinstalls, and resets after five uninterrupted healthy minutes. An absent/untrusted cache requires administrator repair. There is no remote executable download protocol. Protection events are recorded locally rather than sent to an invented backend endpoint. Existing health/check-in schemas remain compatible.
 
 ## Exact ACL policy
 
@@ -74,7 +74,7 @@ The current `install.cmd` preserves WinRE and BCD. Earlier versions disabled rec
 - `apps/windows-agent/src/agent/runner.rs`
 - `apps/windows-agent/src/agent/service.rs`
 - `apps/windows-agent/src/bin/emi-device-updater.rs`
-- `apps/windows-agent/src/bin/emi-device-watchdog.rs`
+- `apps/windows-agent/src/bin/RepairWatchdog.rs`
 - `apps/windows-agent/src/lib.rs`
 - `apps/windows-agent/src/main.rs`
 - `apps/windows-agent/src/protection/acl.rs`

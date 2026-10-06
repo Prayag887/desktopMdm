@@ -58,7 +58,7 @@ function Undo-ProtectionTransaction($Transaction) {
     $startup = if ($s.StartMode -eq 'Auto') { 'Automatic' } elseif ($s.StartMode -eq 'Disabled') { 'Disabled' } else { 'Manual' }
     if (Get-Service $s.Name -ErrorAction SilentlyContinue) {
       $mode = if ($s.StartMode -eq 'Auto') { 'Automatic' } elseif ($s.StartMode -eq 'Disabled') { 'Disabled' } else { 'Manual' }
-      Set-ProtectionServiceConfiguration $s.Name $s.PathName $mode
+      Set-ProtectionServiceConfiguration $s.Name $s.PathName $mode $s.DisplayName
     } else { New-Service -Name $s.Name -BinaryPathName $s.PathName -DisplayName $s.DisplayName -StartupType $startup | Out-Null }
     & "$env:SystemRoot\System32\sc.exe" failure $s.Name reset= 86400 actions= restart/30000/restart/60000/restart/300000 | Out-Null
     if ($s.WasRunning) { Start-Service $s.Name }

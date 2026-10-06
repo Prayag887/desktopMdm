@@ -45,13 +45,34 @@ try {
     if ($exitCode -ne 0) { throw "Installer attempt $attempt failed" }
     foreach ($name in 'EmiDeviceAgent','EmiDeviceWatchdog') {
       if ((Get-Service $name).Status -ne 'Running') { throw "$name not running after install" }
-      $binary=if ($name -eq 'EmiDeviceAgent') { 'emi-device-agent.exe' } else { 'emi-device-watchdog.exe' }
+      $binary=if ($name -eq 'EmiDeviceAgent') { 'emi-device-agent.exe' } else { 'RepairWatchdog.exe' }
       $expected='"'+(Join-Path $install $binary)+'" service'
-      if ((Get-CimInstance Win32_Service -Filter "Name='$name'").PathName -ne $expected) { throw "$name has an incorrectly quoted binary path" }
+      $registration=Get-CimInstance Win32_Service -Filter "Name='$name'"
+      if ($registration.StartMode -ne 'Auto' -or $registration.StartName -ne 'LocalSystem') { throw "$name will not start as SYSTEM at boot" }
+      if ($name -eq 'EmiDeviceWatchdog' -and $registration.DisplayName -ne 'RepairWatchdog') { throw 'Watchdog display name incorrect' }
+      if ($registration.PathName -ne $expected) { throw "$name has an incorrectly quoted binary path" }
     }
+    $repairSource=Get-Content (Join-Path $data 'repair-source.json') -Raw | ConvertFrom-Json
+    $cacheRoot=Join-Path $env:ProgramData 'RepairWatchdog'
+    if ([IO.Path]::GetDirectoryName($repairSource.package) -ne $cacheRoot -or -not (Test-Path (Join-Path $repairSource.package 'RepairWatchdog.exe'))) { throw 'Verified repair backup missing after installer' }
     if ((Get-Content $configPath -Raw | ConvertFrom-Json).device_id -ne $identity) { throw 'Reinstall replaced device identity' }
     if (-not (Get-ScheduledTask -TaskName EmiDeviceLockAll)) { throw 'Logon task missing' }
+    if ($attempt -eq 1) { Remove-Item -LiteralPath (Join-Path $repairSource.package 'emi-device-ui.exe') -Force }
   }
+  # Restart only the monitor to force its initial integrity check after deletion.
+  Stop-Service EmiDeviceWatchdog
+  Stop-Service EmiDeviceAgent
+  $missing=Join-Path $install 'emi-device-ui.exe'
+  Remove-Item -LiteralPath $missing -Force
+  Start-Service EmiDeviceWatchdog
+  $deadline=[DateTime]::UtcNow.AddMinutes(4)
+  do {
+    Start-Sleep -Seconds 3
+    $recovered=(Test-Path $missing) -and ((Get-Service EmiDeviceAgent).Status -eq 'Running') -and ((Get-Service EmiDeviceWatchdog).Status -eq 'Running')
+  } until ($recovered -or [DateTime]::UtcNow -ge $deadline)
+  if (-not $recovered) { throw 'Watchdog did not restore deleted installation file' }
+  if ((Get-FileHash $missing).Hash -ne (Get-FileHash (Join-Path $package 'emi-device-ui.exe')).Hash) { throw 'Restored file differs from signed release' }
+  Write-Output 'RepairWatchdog backup, automatic SYSTEM boot configuration and actual deleted-file recovery verified.'
   # Force an error after transaction snapshot; existing services/state must recover.
   $unexpected=Join-Path $data 'unexpected-test-directory'
   New-Item -ItemType Directory $unexpected | Out-Null

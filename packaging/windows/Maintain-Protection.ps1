@@ -18,7 +18,7 @@ $lease = Join-Path $dataDir 'maintenance.json'
 [pscustomobject]@{ event='authorized_maintenance'; action=$Action; at=[DateTime]::UtcNow.ToString('o'); user=[Security.Principal.WindowsIdentity]::GetCurrent().Name } | ConvertTo-Json -Compress
 if ($Action -in @('Update','Repair')) {
   if (-not $PackageDir) { throw 'A trusted extracted release package is required' }
-  $publisher = Get-AuthenticodeSignature (Join-Path $InstallDir 'emi-device-watchdog.exe')
+  $publisher = Get-AuthenticodeSignature (Join-Path $InstallDir 'RepairWatchdog.exe')
   if ($publisher.Status -ne 'Valid') { throw 'Installed publisher unavailable; recover with an administrator-verified release and install.ps1' }
   $result = Test-ProtectionIntegrity $PackageDir $publisher.SignerCertificate.Thumbprint
   if (-not $result.verified) { throw "Untrusted repair package: $($result.failures -join ', ')" }

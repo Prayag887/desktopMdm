@@ -17,15 +17,22 @@ function Copy-ProtectionPackage([string]$Source, [string]$Destination, [bool]$Un
   } else { throw 'Signed package manifest required' }
 }
 function Initialize-ProtectionRepairCache([string]$Source, [string]$DataDir, [string]$Publisher) {
-  $cacheRoot=Join-Path $env:ProgramData 'EmiDeviceAgentRepair'
+  $cacheRoot=Join-Path $env:ProgramData 'RepairWatchdog'
   New-Item -ItemType Directory -Force $cacheRoot | Out-Null
   Apply-ProtectionAcl $cacheRoot | Out-Null
   $packageId=(Get-FileHash (Join-Path $Source 'protection-manifest.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()
   $cache=Join-Path $cacheRoot $packageId
-  if (-not (Test-Path -LiteralPath $cache)) {
-    New-Item -ItemType Directory $cache | Out-Null
-    Apply-ProtectionAcl $cache | Out-Null
-    Copy-ProtectionPackage $Source $cache
+  $existing=if (Test-Path -LiteralPath $cache) { Test-ProtectionIntegrity $cache $Publisher } else { $null }
+  if (-not $existing -or -not $existing.verified) {
+    $stage=Join-Path $cacheRoot ('stage-'+[Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory $stage | Out-Null
+      Apply-ProtectionAcl $stage | Out-Null
+      Copy-ProtectionPackage $Source $stage
+      if (-not (Test-ProtectionIntegrity $stage $Publisher).verified) { throw 'Staged repair backup verification failed' }
+      if (Test-Path -LiteralPath $cache) { Get-ProtectionItems $cache | Out-Null; Remove-Item -LiteralPath $cache -Recurse -Force }
+      [IO.Directory]::Move($stage,$cache)
+    } finally { if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force } }
   }
   Apply-ProtectionAcl $cacheRoot | Out-Null
   $result=Test-ProtectionIntegrity $cache $Publisher
@@ -33,4 +40,5 @@ function Initialize-ProtectionRepairCache([string]$Source, [string]$DataDir, [st
   $sourceFile=Join-Path $DataDir 'repair-source.json'
   [IO.File]::WriteAllText($sourceFile, (@{package=$cache} | ConvertTo-Json))
   Set-EmiAcl $sourceFile -Private $true
+  Write-Host "Verified RepairWatchdog backup installed at: $cache" -ForegroundColor Green
 }

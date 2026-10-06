@@ -19,7 +19,7 @@ $uiExe = Join-Path $PSScriptRoot 'emi-device-ui.exe'
 if (-not (Test-Path $exe)) { throw 'emi-device-agent.exe must be beside install.ps1' }
 if (-not (Test-Path $uiExe)) { throw 'emi-device-ui.exe must be beside install.ps1' }
 
-$watchdogExe = Join-Path $PSScriptRoot 'emi-device-watchdog.exe'
+$watchdogExe = Join-Path $PSScriptRoot 'RepairWatchdog.exe'
 $updaterExe = Join-Path $PSScriptRoot 'emi-device-updater.exe'
 if (-not (Test-Path -LiteralPath $updaterExe)) { throw 'Updater binary missing from package' }
 if (-not (Test-Path -LiteralPath $watchdogExe)) { throw 'Watchdog binary missing from package' }
@@ -64,7 +64,7 @@ if (-not $AllowUnsigned) {
 try {
 $exe=Join-Path $packageRoot 'emi-device-agent.exe'
 $uiExe=Join-Path $packageRoot 'emi-device-ui.exe'
-$watchdogExe=Join-Path $packageRoot 'emi-device-watchdog.exe'
+$watchdogExe=Join-Path $packageRoot 'RepairWatchdog.exe'
 $updaterExe=Join-Path $packageRoot 'emi-device-updater.exe'
 . (Join-Path $packageRoot 'Protection-Integrity.ps1')
 . (Join-Path $packageRoot 'Protection-Acl.ps1')
@@ -171,12 +171,13 @@ Set-EmiAcl (Join-Path $dataDir 'config.json') -Private $true
 # New-Service handles the spaced binary path that sc.exe rejects (exit 1639).
 # This service is authoritative: it starts during boot, enrolls if necessary,
 # checks in immediately when enrolled, and continues checking every 60 seconds.
-foreach ($registration in @(@('EmiDeviceAgent', $agent), @('EmiDeviceWatchdog', (Join-Path $InstallDir 'emi-device-watchdog.exe')))) {
+foreach ($registration in @(@('EmiDeviceAgent', $agent), @('EmiDeviceWatchdog', (Join-Path $InstallDir 'RepairWatchdog.exe')))) {
   $name=$registration[0]; $binary=$registration[1]
+  $displayName=if ($name -eq 'EmiDeviceWatchdog') { 'RepairWatchdog' } else { $name }
   $binaryPath='"' + $binary + '" service'
   if (Get-Service $name -ErrorAction SilentlyContinue) {
-    Set-ProtectionServiceConfiguration $name $binaryPath 'Automatic'
-  } else { New-Service -Name $name -BinaryPathName $binaryPath -StartupType Automatic -DisplayName $name | Out-Null }
+    Set-ProtectionServiceConfiguration $name $binaryPath 'Automatic' $displayName
+  } else { New-Service -Name $name -BinaryPathName $binaryPath -StartupType Automatic -DisplayName $displayName | Out-Null }
   & "$env:SystemRoot\System32\sc.exe" failure $name reset= 86400 actions= restart/30000/restart/60000/restart/300000 | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "Recovery configuration failed: $name" }
   & "$env:SystemRoot\System32\sc.exe" failureflag $name 1 | Out-Null

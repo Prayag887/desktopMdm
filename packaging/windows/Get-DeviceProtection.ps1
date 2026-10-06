@@ -13,7 +13,7 @@ function Get-ServiceProtectionStatus([string]$Name, [string]$Executable, [string
     return @{state='NEEDS_ATTENTION';detail="$Name state: $($s.State)"}
   } catch { return @{state='ERROR';detail="Cannot query $Name"} }
 }
-$watchdogCheck = Get-ServiceProtectionStatus EmiDeviceWatchdog 'emi-device-watchdog.exe' service
+$watchdogCheck = Get-ServiceProtectionStatus EmiDeviceWatchdog 'RepairWatchdog.exe' service
 $watchdogState = Join-Path $env:ProgramData 'EmiDeviceAgent\watchdog-status.json'
 if (Test-Path -LiteralPath $watchdogState) {
   try {
