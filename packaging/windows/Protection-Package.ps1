@@ -22,7 +22,11 @@ function Initialize-ProtectionRepairCache([string]$Source, [string]$DataDir, [st
   Apply-ProtectionAcl $cacheRoot | Out-Null
   $packageId=(Get-FileHash (Join-Path $Source 'protection-manifest.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()
   $cache=Join-Path $cacheRoot $packageId
-  $existing=if (Test-Path -LiteralPath $cache) { Test-ProtectionIntegrity $cache $Publisher } else { $null }
+  $existing=$null
+  if (Test-Path -LiteralPath $cache) {
+    try { $existing=Test-ProtectionIntegrity $cache $Publisher }
+    catch { Write-Warning 'Existing repair backup is incomplete or invalid; rebuilding from the authenticated package.' }
+  }
   if (-not $existing -or -not $existing.verified) {
     $stage=Join-Path $cacheRoot ('stage-'+[Guid]::NewGuid().ToString('N'))
     try {
