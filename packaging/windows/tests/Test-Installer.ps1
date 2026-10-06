@@ -10,6 +10,7 @@ $package=Join-Path $env:RUNNER_TEMP "EMI install test's package"
 Copy-Item -LiteralPath $PackagePath -Destination $package -Recurse
 $ps=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 try {
+  New-NetFirewallRule -DisplayName 'EMI installer test isolation' -Direction Outbound -Program (Join-Path $install 'emi-device-agent.exe') -Action Block | Out-Null
   # Seed only local identity and an unreachable loopback API: no production API calls.
   & (Join-Path $package 'emi-device-agent.exe') init
   if ($LASTEXITCODE -ne 0) { throw 'Test identity initialization failed' }
@@ -27,13 +28,17 @@ try {
       $start.UseShellExecute=$false
       $start.Arguments='/d /s /c '+$command
       $child=[Diagnostics.Process]::Start($start)
-      try { $child.WaitForExit(); $LASTEXITCODE=$child.ExitCode } finally { $child.Dispose() }
+      try { $child.WaitForExit(); $exitCode=$child.ExitCode } finally { $child.Dispose() }
     } else {
       & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Start-EmiInstaller.ps1') -SkipWingetBootstrap -SkipUiLaunch
+      $exitCode=$LASTEXITCODE
     }
-    if ($LASTEXITCODE -ne 0) { throw "Installer attempt $attempt failed" }
+    if ($exitCode -ne 0) { throw "Installer attempt $attempt failed" }
     foreach ($name in 'EmiDeviceAgent','EmiDeviceWatchdog') {
       if ((Get-Service $name).Status -ne 'Running') { throw "$name not running after install" }
+      $binary=if ($name -eq 'EmiDeviceAgent') { 'emi-device-agent.exe' } else { 'emi-device-watchdog.exe' }
+      $expected='"'+(Join-Path $install $binary)+'" service'
+      if ((Get-CimInstance Win32_Service -Filter "Name='$name'").PathName -ne $expected) { throw "$name has an incorrectly quoted binary path" }
     }
     if ((Get-Content $configPath -Raw | ConvertFrom-Json).device_id -ne $identity) { throw 'Reinstall replaced device identity' }
     if (-not (Get-ScheduledTask -TaskName EmiDeviceLockAll)) { throw 'Logon task missing' }
@@ -55,5 +60,6 @@ try {
   Write-Output 'Signed install from spaced/apostrophe path, reinstall, failure rollback and uninstall verified.'
 } finally {
   if (Test-Path (Join-Path $install 'emi-device-agent.exe')) { & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'uninstall.ps1') }
+  Remove-NetFirewallRule -DisplayName 'EMI installer test isolation' -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $package -Recurse -Force -ErrorAction SilentlyContinue
 }

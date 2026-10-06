@@ -70,6 +70,7 @@ $updaterExe=Join-Path $packageRoot 'emi-device-updater.exe'
 . (Join-Path $packageRoot 'Protection-Acl.ps1')
 . (Join-Path $packageRoot 'Set-EmiStateAcl.ps1')
 . (Join-Path $packageRoot 'Protection-Transaction.ps1')
+. (Join-Path $packageRoot 'Protection-Service.ps1')
 . (Join-Path $packageRoot 'Protection-Package.ps1')
 . (Join-Path $packageRoot 'Get-SecurityPosture.ps1')
 if (-not $AllowUnsigned) {
@@ -174,8 +175,7 @@ foreach ($registration in @(@('EmiDeviceAgent', $agent), @('EmiDeviceWatchdog', 
   $name=$registration[0]; $binary=$registration[1]
   $binaryPath='"' + $binary + '" service'
   if (Get-Service $name -ErrorAction SilentlyContinue) {
-    & "$env:SystemRoot\System32\sc.exe" config $name binPath= $binaryPath start= auto obj= LocalSystem | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Service configuration failed: $name" }
+    Set-ProtectionServiceConfiguration $name $binaryPath 'Automatic'
   } else { New-Service -Name $name -BinaryPathName $binaryPath -StartupType Automatic -DisplayName $name | Out-Null }
   & "$env:SystemRoot\System32\sc.exe" failure $name reset= 86400 actions= restart/30000/restart/60000/restart/300000 | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "Recovery configuration failed: $name" }
