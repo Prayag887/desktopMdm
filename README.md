@@ -128,3 +128,9 @@ the entire install as failed. Open the companion manually to inspect any Windows
 security prompt. The message alone does not identify whether UAC, SmartScreen,
 or another Windows control canceled the launch. `-SkipUiLaunch` skips this
 interactive step; the Intune wrapper uses it for SYSTEM/session-0 deployment.
+
+### Explorer context menus
+
+Starting with v0.6.47, installation sets the machine-wide `NoViewContextMenu` Explorer policy. Desktop and File Explorer right-click menus are disabled for all accounts, including administrators, after signing out and back in. The agent service, companion UI and login launch remain enabled. Keyboard shortcuts, toolbar actions and administrator access remain available; this policy does not prevent administrator deletion.
+
+The original policy value is stored privately in ProgramData and preserved across upgrades. Installation rollback restores the transaction's policy, and uninstall restores the original value unless an administrator or Group Policy has subsequently changed it to a different value.

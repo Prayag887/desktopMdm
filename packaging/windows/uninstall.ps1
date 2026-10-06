@@ -6,6 +6,8 @@ $resolvedInstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 $programFilesPrefix = [System.IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd('\') + '\'
 if (-not $resolvedInstallDir.StartsWith($programFilesPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'InstallDir must be a child directory under Program Files' }
 if (-not (Test-Path (Join-Path $resolvedInstallDir 'emi-device-agent.exe'))) { throw 'InstallDir does not contain the EMI Device Agent; nothing was removed' }
+. (Join-Path $PSScriptRoot 'Explorer-ContextPolicy.ps1')
+Remove-EmiExplorerContextPolicy (Join-Path $env:ProgramData 'EmiDeviceAgent')
 Get-Process -Name 'emi-device-ui' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq (Join-Path $resolvedInstallDir 'emi-device-ui.exe') } | Stop-Process -Force
 if (Get-Service EmiDeviceWatchdog -ErrorAction SilentlyContinue) {
   Stop-Service EmiDeviceWatchdog -Force

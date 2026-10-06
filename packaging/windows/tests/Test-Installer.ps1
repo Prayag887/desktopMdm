@@ -8,6 +8,8 @@ $data=Join-Path $env:ProgramData 'EmiDeviceAgent'
 if ((Test-Path $install) -or (Test-Path $data) -or (Get-Service EmiDeviceAgent -ErrorAction SilentlyContinue)) { throw 'Installer test requires a clean disposable runner' }
 $package=Join-Path $env:RUNNER_TEMP "EMI install test's package"
 Copy-Item -LiteralPath $PackagePath -Destination $package -Recurse
+. (Join-Path $package 'Explorer-ContextPolicy.ps1')
+$originalExplorerPolicy=Get-EmiExplorerPolicyState
 $ps=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 try {
   New-NetFirewallRule -DisplayName 'EMI installer test isolation' -Direction Outbound -Program (Join-Path $install 'emi-device-agent.exe') -Action Block | Out-Null
@@ -36,6 +38,10 @@ try {
       & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Start-EmiInstaller.ps1') -SkipWingetBootstrap -SkipUiLaunch
       $exitCode=$LASTEXITCODE
     }
+    $explorerPolicy=Get-EmiExplorerPolicyState
+    if (-not $explorerPolicy.present -or $explorerPolicy.value -ne 1) { throw 'Machine-wide Explorer menus were not disabled' }
+    $shell=New-Object -ComObject Shell.Application
+    try { if ($shell.IsRestricted('Explorer','NoViewContextMenu') -ne 1) { throw 'Windows shell did not recognize the Explorer policy' } } finally { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
     if ($exitCode -ne 0) { throw "Installer attempt $attempt failed" }
     foreach ($name in 'EmiDeviceAgent','EmiDeviceWatchdog') {
       if ((Get-Service $name).Status -ne 'Running') { throw "$name not running after install" }
@@ -55,14 +61,17 @@ try {
     if ((Get-Service $name).Status -ne 'Running') { throw "$name not restored by rollback" }
   }
   if ((Get-Content $configPath -Raw | ConvertFrom-Json).device_id -ne $identity) { throw 'Rollback lost device identity' }
+  if ((Get-EmiExplorerPolicyState).value -ne 1) { throw 'Rollback lost installed Explorer policy' }
   Remove-Item -LiteralPath $unexpected -Recurse -Force
   & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'uninstall.ps1')
   if ($LASTEXITCODE -ne 0) { throw 'Uninstall failed' }
+  if ((Get-EmiExplorerPolicyState | ConvertTo-Json -Compress) -ne ($originalExplorerPolicy | ConvertTo-Json -Compress)) { throw 'Uninstall did not restore Explorer policy' }
   if ((Test-Path $install) -or (Get-Service EmiDeviceAgent -ErrorAction SilentlyContinue) -or (Get-Service EmiDeviceWatchdog -ErrorAction SilentlyContinue) -or (Get-ScheduledTask EmiDeviceLockAll -ErrorAction SilentlyContinue)) { throw 'Uninstall left program/services/task behind' }
   if ((Get-Content $configPath -Raw | ConvertFrom-Json).device_id -ne $identity) { throw 'Uninstall lost recovery data' }
   Write-Output 'Signed install from spaced/apostrophe path, reinstall, failure rollback and uninstall verified.'
 } finally {
   if (Test-Path (Join-Path $install 'emi-device-agent.exe')) { & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'uninstall.ps1') }
+  Set-EmiExplorerPolicyState $originalExplorerPolicy
   Remove-NetFirewallRule -DisplayName 'EMI installer test isolation' -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $package -Recurse -Force -ErrorAction SilentlyContinue
 }

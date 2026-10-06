@@ -1,6 +1,7 @@
 #Requires -Version 5.1
 # Capture program/state files and service registration before changing the installation.
 . (Join-Path $PSScriptRoot 'Protection-Service.ps1')
+. (Join-Path $PSScriptRoot 'Explorer-ContextPolicy.ps1')
 function Start-ProtectionTransaction([string]$InstallDir, [string]$DataDir) {
   $backup = Join-Path $env:ProgramData ('EmiProtectionBackup-' + [Guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory $backup -ErrorAction Stop | Out-Null
@@ -11,6 +12,7 @@ function Start-ProtectionTransaction([string]$InstallDir, [string]$DataDir) {
     if ($s) { $services += [pscustomobject]@{ Name=$name; PathName=$s.PathName; StartMode=$s.StartMode; StartName=$s.StartName; WasRunning=($s.State -eq 'Running'); DisplayName=$s.DisplayName } }
   }
   foreach ($s in $services) { if ($s.StartName -notin @('LocalSystem','NT AUTHORITY\SYSTEM')) { throw 'Cannot transactionally service a non-LocalSystem installation' } }
+  $explorerPolicy = Get-EmiExplorerPolicyState
   $task = Get-ScheduledTask -TaskName EmiDeviceLockAll -ErrorAction SilentlyContinue
   if ($task) { Export-ScheduledTask -TaskName EmiDeviceLockAll | Set-Content (Join-Path $backup 'task.xml') }
   try {
@@ -26,13 +28,14 @@ function Start-ProtectionTransaction([string]$InstallDir, [string]$DataDir) {
     }
   }
   [IO.File]::WriteAllText((Join-Path $backup 'acls.json'), (ConvertTo-Json -InputObject $aclBackup -Depth 4))
-  [pscustomobject]@{ Backup=$backup; Services=$services; InstallDir=$InstallDir; DataDir=$DataDir }
+  [pscustomobject]@{ Backup=$backup; Services=$services; InstallDir=$InstallDir; DataDir=$DataDir; ExplorerPolicy=$explorerPolicy }
   } catch {
     foreach ($s in $services) { if ($s.WasRunning) { Start-Service $s.Name -ErrorAction SilentlyContinue } }
     throw
   }
 }
 function Undo-ProtectionTransaction($Transaction) {
+  Set-EmiExplorerPolicyState $Transaction.ExplorerPolicy
   foreach ($name in 'EmiDeviceWatchdog','EmiDeviceAgent') {
     Stop-ProtectionService $name
     if ($name -notin @($Transaction.Services | ForEach-Object { $_.Name }) -and (Get-Service $name -ErrorAction SilentlyContinue)) {

@@ -218,6 +218,9 @@ $lockPrincipal = New-ScheduledTaskPrincipal -GroupId 'S-1-1-0'
 $lockSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName 'EmiDeviceLockAll' -Action $lockAction -Trigger $lockTrigger -Principal $lockPrincipal -Settings $lockSettings -Force | Out-Null
 
+Enable-EmiExplorerContextPolicy $dataDir
+Write-Host 'Explorer and desktop right-click menus are disabled for all users, including administrators. Sign out and back in to apply the setting.'
+
 } catch {
   $installationError = $_
   try { Undo-ProtectionTransaction $transaction } catch { Write-Warning "Rollback incomplete; administrator recovery backup: $($transaction.Backup)" }
