@@ -1,4 +1,7 @@
 @echo off
+setlocal
+rem Rebuild native module paths when launched from PowerShell 7 or automation.
+set "PSModulePath="
 rem The launcher checks the Windows token and handles UAC independently of services.
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0Start-EmiInstaller.ps1" %*
 set "INSTALL_EXIT=%ERRORLEVEL%"
