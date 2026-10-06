@@ -22,7 +22,12 @@ try {
     if ($attempt -eq 1) {
       # Exercise the actual .cmd; NUL answers its final pause on the CI runner.
       $command='""' + (Join-Path $package 'install.cmd') + '" -SkipWingetBootstrap -SkipUiLaunch <NUL"'
-      & "$env:SystemRoot\System32\cmd.exe" /d /s /c $command
+      $start=[Diagnostics.ProcessStartInfo]::new()
+      $start.FileName=Join-Path $env:SystemRoot 'System32\cmd.exe'
+      $start.UseShellExecute=$false
+      $start.Arguments='/d /s /c '+$command
+      $child=[Diagnostics.Process]::Start($start)
+      try { $child.WaitForExit(); $LASTEXITCODE=$child.ExitCode } finally { $child.Dispose() }
     } else {
       & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Start-EmiInstaller.ps1') -SkipWingetBootstrap -SkipUiLaunch
     }
