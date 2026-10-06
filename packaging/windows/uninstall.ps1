@@ -8,8 +8,10 @@ if (-not $resolvedInstallDir.StartsWith($programFilesPrefix, [System.StringCompa
 if (-not (Test-Path (Join-Path $resolvedInstallDir 'emi-device-agent.exe'))) { throw 'InstallDir does not contain the EMI Device Agent; nothing was removed' }
 . (Join-Path $PSScriptRoot 'Explorer-ContextPolicy.ps1')
 . (Join-Path $PSScriptRoot 'SignIn-PowerPolicy.ps1')
+. (Join-Path $PSScriptRoot 'Recovery-PagePolicy.ps1')
 Remove-EmiExplorerContextPolicy (Join-Path $env:ProgramData 'EmiDeviceAgent')
 Remove-EmiSignInPowerPolicy (Join-Path $env:ProgramData 'EmiDeviceAgent')
+Remove-EmiRecoveryPagePolicy (Join-Path $env:ProgramData 'EmiDeviceAgent')
 Get-Process -Name 'emi-device-ui' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq (Join-Path $resolvedInstallDir 'emi-device-ui.exe') } | Stop-Process -Force
 if (Get-Service EmiDeviceWatchdog -ErrorAction SilentlyContinue) {
   Stop-Service EmiDeviceWatchdog -Force

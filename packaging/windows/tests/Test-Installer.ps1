@@ -10,8 +10,10 @@ $package=Join-Path $env:RUNNER_TEMP "EMI install test's package"
 Copy-Item -LiteralPath $PackagePath -Destination $package -Recurse
 . (Join-Path $package 'Explorer-ContextPolicy.ps1')
 . (Join-Path $package 'SignIn-PowerPolicy.ps1')
+. (Join-Path $package 'Recovery-PagePolicy.ps1')
 $originalExplorerPolicy=Get-EmiExplorerPolicyState
 $originalSignInPowerPolicy=Get-EmiSignInPowerPolicyState
+$originalRecoveryPagePolicy=Get-EmiRecoveryPagePolicyState
 $ps=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 try {
   New-NetFirewallRule -DisplayName 'EMI installer test isolation' -Direction Outbound -Program (Join-Path $install 'emi-device-agent.exe') -Action Block | Out-Null
@@ -40,6 +42,8 @@ try {
       & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Start-EmiInstaller.ps1') -SkipWingetBootstrap -SkipUiLaunch
       $exitCode=$LASTEXITCODE
     }
+    $recoveryPolicy=Get-EmiRecoveryPagePolicyState
+    if (-not $recoveryPolicy.present -or $recoveryPolicy.kind -ne 'String' -or $recoveryPolicy.value -ne (Get-EmiRecoveryHiddenValue $originalRecoveryPagePolicy)) { throw 'Recovery page policy was not applied' }
     $powerPolicy=Get-EmiSignInPowerPolicyState
     if (-not $powerPolicy.present -or $powerPolicy.kind -ne 'DWord' -or $powerPolicy.value -ne 0) { throw 'Sign-in power button policy was not disabled' }
     $explorerPolicy=Get-EmiExplorerPolicyState
@@ -86,6 +90,7 @@ try {
     if ((Get-Service $name).Status -ne 'Running') { throw "$name not restored by rollback" }
   }
   if ((Get-Content $configPath -Raw | ConvertFrom-Json).device_id -ne $identity) { throw 'Rollback lost device identity' }
+  if ((Get-EmiRecoveryPagePolicyState).value -ne (Get-EmiRecoveryHiddenValue $originalRecoveryPagePolicy)) { throw 'Rollback lost Recovery page policy' }
   if ((Get-EmiSignInPowerPolicyState).value -ne 0) { throw 'Rollback lost sign-in power policy' }
   if ((Get-EmiExplorerPolicyState).value -ne 1) { throw 'Rollback lost installed Explorer policy' }
   Remove-Item -LiteralPath $unexpected -Recurse -Force
@@ -93,6 +98,7 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Uninstall failed' }
   if ((Get-EmiExplorerPolicyState | ConvertTo-Json -Compress) -ne ($originalExplorerPolicy | ConvertTo-Json -Compress)) { throw 'Uninstall did not restore Explorer policy' }
   if ((Get-EmiSignInPowerPolicyState | ConvertTo-Json -Compress) -ne ($originalSignInPowerPolicy | ConvertTo-Json -Compress)) { throw 'Uninstall did not restore sign-in power policy' }
+  if ((Get-EmiRecoveryPagePolicyState | ConvertTo-Json -Compress) -ne ($originalRecoveryPagePolicy | ConvertTo-Json -Compress)) { throw 'Uninstall did not restore Recovery page policy' }
   if ((Test-Path $install) -or (Get-Service EmiDeviceAgent -ErrorAction SilentlyContinue) -or (Get-Service EmiDeviceWatchdog -ErrorAction SilentlyContinue) -or (Get-ScheduledTask EmiDeviceLockAll -ErrorAction SilentlyContinue)) { throw 'Uninstall left program/services/task behind' }
   if ((Get-Content $configPath -Raw | ConvertFrom-Json).device_id -ne $identity) { throw 'Uninstall lost recovery data' }
   Write-Output 'Signed install from spaced/apostrophe path, reinstall, failure rollback and uninstall verified.'
@@ -100,6 +106,7 @@ try {
   if (Test-Path (Join-Path $install 'emi-device-agent.exe')) { & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'uninstall.ps1') }
   Set-EmiExplorerPolicyState $originalExplorerPolicy
   Set-EmiSignInPowerPolicyState $originalSignInPowerPolicy
+  Set-EmiRecoveryPagePolicyState $originalRecoveryPagePolicy
   Remove-NetFirewallRule -DisplayName 'EMI installer test isolation' -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $package -Recurse -Force -ErrorAction SilentlyContinue
 }

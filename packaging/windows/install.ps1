@@ -221,6 +221,8 @@ Register-ScheduledTask -TaskName 'EmiDeviceLockAll' -Action $lockAction -Trigger
 
 Enable-EmiExplorerContextPolicy $dataDir
 Disable-EmiSignInPowerPolicy $dataDir
+Enable-EmiRecoveryPagePolicy $dataDir
+Write-Host 'Recovery page hidden in Windows Settings. Close and reopen Settings to apply.' -ForegroundColor Green
 Write-Host 'Sign-in screen power button disabled.' -ForegroundColor Green
 Write-Host 'Explorer and desktop right-click menus are disabled for all users, including administrators. Sign out and back in to apply the setting.'
 

@@ -3,6 +3,7 @@
 . (Join-Path $PSScriptRoot 'Protection-Service.ps1')
 . (Join-Path $PSScriptRoot 'Explorer-ContextPolicy.ps1')
 . (Join-Path $PSScriptRoot 'SignIn-PowerPolicy.ps1')
+. (Join-Path $PSScriptRoot 'Recovery-PagePolicy.ps1')
 function Start-ProtectionTransaction([string]$InstallDir, [string]$DataDir) {
   $backup = Join-Path $env:ProgramData ('EmiProtectionBackup-' + [Guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory $backup -ErrorAction Stop | Out-Null
@@ -15,6 +16,7 @@ function Start-ProtectionTransaction([string]$InstallDir, [string]$DataDir) {
   foreach ($s in $services) { if ($s.StartName -notin @('LocalSystem','NT AUTHORITY\SYSTEM')) { throw 'Cannot transactionally service a non-LocalSystem installation' } }
   $explorerPolicy = Get-EmiExplorerPolicyState
   $signInPowerPolicy = Get-EmiSignInPowerPolicyState
+  $recoveryPagePolicy = Get-EmiRecoveryPagePolicyState
   $task = Get-ScheduledTask -TaskName EmiDeviceLockAll -ErrorAction SilentlyContinue
   if ($task) { Export-ScheduledTask -TaskName EmiDeviceLockAll | Set-Content (Join-Path $backup 'task.xml') }
   try {
@@ -30,7 +32,7 @@ function Start-ProtectionTransaction([string]$InstallDir, [string]$DataDir) {
     }
   }
   [IO.File]::WriteAllText((Join-Path $backup 'acls.json'), (ConvertTo-Json -InputObject $aclBackup -Depth 4))
-  [pscustomobject]@{ Backup=$backup; Services=$services; InstallDir=$InstallDir; DataDir=$DataDir; ExplorerPolicy=$explorerPolicy; SignInPowerPolicy=$signInPowerPolicy }
+  [pscustomobject]@{ Backup=$backup; Services=$services; InstallDir=$InstallDir; DataDir=$DataDir; ExplorerPolicy=$explorerPolicy; SignInPowerPolicy=$signInPowerPolicy; RecoveryPagePolicy=$recoveryPagePolicy }
   } catch {
     foreach ($s in $services) { if ($s.WasRunning) { Start-Service $s.Name -ErrorAction SilentlyContinue } }
     throw
@@ -39,6 +41,7 @@ function Start-ProtectionTransaction([string]$InstallDir, [string]$DataDir) {
 function Undo-ProtectionTransaction($Transaction) {
   Set-EmiExplorerPolicyState $Transaction.ExplorerPolicy
   Set-EmiSignInPowerPolicyState $Transaction.SignInPowerPolicy
+  Set-EmiRecoveryPagePolicyState $Transaction.RecoveryPagePolicy
   foreach ($name in 'EmiDeviceWatchdog','EmiDeviceAgent') {
     Stop-ProtectionService $name
     if ($name -notin @($Transaction.Services | ForEach-Object { $_.Name }) -and (Get-Service $name -ErrorAction SilentlyContinue)) {
