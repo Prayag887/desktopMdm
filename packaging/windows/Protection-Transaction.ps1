@@ -73,12 +73,3 @@ function Undo-ProtectionTransaction($Transaction) {
   if (Test-Path (Join-Path $Transaction.Backup 'task.xml')) { Register-ScheduledTask -TaskName EmiDeviceLockAll -Xml (Get-Content (Join-Path $Transaction.Backup 'task.xml') -Raw) | Out-Null }
 }
 
-function Stop-ProtectionService([string]$Name) {
-  $service=Get-Service $Name -ErrorAction SilentlyContinue
-  if ($service) {
-    try {
-      Stop-Service $Name -ErrorAction Stop
-      $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(120))
-    } finally { $service.Dispose() }
-  }
-}

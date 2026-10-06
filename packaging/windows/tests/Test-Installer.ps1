@@ -76,7 +76,8 @@ try {
   $deadline=[DateTime]::UtcNow.AddMinutes(4)
   do {
     Start-Sleep -Seconds 3
-    $recovered=(Test-Path $missing) -and ((Get-Service EmiDeviceAgent).Status -eq 'Running') -and ((Get-Service EmiDeviceWatchdog).Status -eq 'Running')
+    $repairRunning=@(Get-Process -Name 'emi-device-updater' -ErrorAction SilentlyContinue).Count -gt 0
+    $recovered=(-not $repairRunning) -and (Test-Path $missing) -and ((Get-Service EmiDeviceAgent).Status -eq 'Running') -and ((Get-Service EmiDeviceWatchdog).Status -eq 'Running')
   } until ($recovered -or [DateTime]::UtcNow -ge $deadline)
   if (-not $recovered) { throw 'Watchdog did not restore deleted installation file' }
   if ((Get-FileHash $missing).Hash -ne (Get-FileHash (Join-Path $package 'emi-device-ui.exe')).Hash) { throw 'Restored file differs from signed release' }

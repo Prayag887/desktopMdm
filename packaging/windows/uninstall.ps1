@@ -6,6 +6,7 @@ $resolvedInstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 $programFilesPrefix = [System.IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd('\') + '\'
 if (-not $resolvedInstallDir.StartsWith($programFilesPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'InstallDir must be a child directory under Program Files' }
 if (-not (Test-Path (Join-Path $resolvedInstallDir 'emi-device-agent.exe'))) { throw 'InstallDir does not contain the EMI Device Agent; nothing was removed' }
+. (Join-Path $PSScriptRoot 'Protection-Service.ps1')
 . (Join-Path $PSScriptRoot 'Explorer-ContextPolicy.ps1')
 . (Join-Path $PSScriptRoot 'SignIn-PowerPolicy.ps1')
 . (Join-Path $PSScriptRoot 'Recovery-PagePolicy.ps1')
@@ -14,12 +15,12 @@ Remove-EmiSignInPowerPolicy (Join-Path $env:ProgramData 'EmiDeviceAgent')
 Remove-EmiRecoveryPagePolicy (Join-Path $env:ProgramData 'EmiDeviceAgent')
 Get-Process -Name 'emi-device-ui' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq (Join-Path $resolvedInstallDir 'emi-device-ui.exe') } | Stop-Process -Force
 if (Get-Service EmiDeviceWatchdog -ErrorAction SilentlyContinue) {
-  Stop-Service EmiDeviceWatchdog -Force
+  Stop-ProtectionService EmiDeviceWatchdog
   & "$env:SystemRoot\System32\sc.exe" delete EmiDeviceWatchdog | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'Watchdog removal failed' }
 }
 if (Get-Service EmiDeviceAgent -ErrorAction SilentlyContinue) {
-  Stop-Service EmiDeviceAgent -Force
+  Stop-ProtectionService EmiDeviceAgent
   & "$env:SystemRoot\System32\sc.exe" delete EmiDeviceAgent | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'Core service removal failed' }
 }
