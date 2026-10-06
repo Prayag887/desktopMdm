@@ -23,21 +23,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$principal = New-Object Security.Principal.WindowsPrincipal($identity)
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  # Relaunch elevated with the same arguments. (No-op under SYSTEM/RMM.)
-  Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @(
-    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"",
-    '-EnrolledUser', "`"$EnrolledUser`"", '-InstallDir', "`"$InstallDir`""
-  )
-  return
-}
-
-$here = Split-Path -Parent $PSCommandPath
-
-$installArgs = @{ InstallDir = $InstallDir }
-if (-not $WithWinget) { $installArgs['SkipWingetBootstrap'] = $true }
-& (Join-Path $here 'install.ps1') @installArgs
-
-Write-Host "Provisioned '$EnrolledUser'. Use the admin panel to issue LOCK or UNLOCK." -ForegroundColor Green
+$options=@()
+if (-not $WithWinget) { $options += '-SkipWingetBootstrap' }
+$powershell=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+& $powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Start-EmiInstaller.ps1') -InstallDir $InstallDir @options
+$result=$LASTEXITCODE
+if ($result -eq 0) { Write-Host "Provisioned '$EnrolledUser'. Use the admin panel to issue LOCK or UNLOCK." -ForegroundColor Green }
+exit $result
