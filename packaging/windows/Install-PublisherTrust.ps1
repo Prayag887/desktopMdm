@@ -1,8 +1,9 @@
 #Requires -RunAsAdministrator
 #Requires -Version 5.1
 [CmdletBinding()]
-param([string]$CertificatePath = (Join-Path $PSScriptRoot 'emi-publisher.cer'))
+param([string]$CertificatePath = '')
 $ErrorActionPreference='Stop'
+if ([string]::IsNullOrWhiteSpace($CertificatePath)) { $CertificatePath = Join-Path $PSScriptRoot 'emi-publisher.cer' }
 # This is the single administrator-approved private publisher, not an arbitrary root import.
 $expectedSha256='DA2234BEDB50A8FBA21ADE3AECD4BFE1343E86D5C97ADF68FEBCD5DE2F2D8861'
 $bytes=[IO.File]::ReadAllBytes([IO.Path]::GetFullPath($CertificatePath))

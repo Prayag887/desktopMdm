@@ -2,7 +2,7 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-  [string]$PayloadRoot = (Split-Path -Parent $PSScriptRoot),
+  [string]$PayloadRoot = '',
   [string]$InstallDir = "$env:ProgramFiles\EmiDeviceAgent",
   [switch]$SkipWingetBootstrap,
   [Parameter(Mandatory = $true)][UInt64]$CommandSigningKeyId,
@@ -11,6 +11,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($PayloadRoot)) { $PayloadRoot = Split-Path -Parent $PSScriptRoot }
 $installer = Join-Path $PayloadRoot 'install.ps1'
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
   throw "install.ps1 was not found in payload root '$PayloadRoot'. Package the complete packaging/windows directory."

@@ -2,11 +2,12 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-  [string]$PayloadRoot = (Split-Path -Parent $PSScriptRoot),
+  [string]$PayloadRoot = '',
   [string]$InstallDir = "$env:ProgramFiles\EmiDeviceAgent"
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($PayloadRoot)) { $PayloadRoot = Split-Path -Parent $PSScriptRoot }
 $uninstaller = Join-Path $PayloadRoot 'uninstall.ps1'
 if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
   throw "uninstall.ps1 was not found in payload root '$PayloadRoot'."

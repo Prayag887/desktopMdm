@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v6
       - name: Trust the repository private signing identity on this runner
         if: env.PRIVATE_TRUST == 'true' && env.ALLOW_UNSIGNED != 'true'
-        shell: pwsh
+        shell: powershell
         run: |
           ./packaging/windows/Install-PublisherTrust.ps1
           $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new((Resolve-Path packaging/windows/emi-publisher.cer).Path)
