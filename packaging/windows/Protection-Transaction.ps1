@@ -72,4 +72,3 @@ function Undo-ProtectionTransaction($Transaction) {
   Unregister-ScheduledTask -TaskName EmiDeviceLockAll -Confirm:$false -ErrorAction SilentlyContinue
   if (Test-Path (Join-Path $Transaction.Backup 'task.xml')) { Register-ScheduledTask -TaskName EmiDeviceLockAll -Xml (Get-Content (Join-Path $Transaction.Backup 'task.xml') -Raw) | Out-Null }
 }
-

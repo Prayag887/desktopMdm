@@ -23,13 +23,18 @@ function Stop-ProtectionService([string]$Name) {
         return
       }
       if ($service.CanStop -and $service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::StartPending) {
-        try { $service.Stop() }
+        $stopAccepted=$false
+        try { $service.Stop(); $stopAccepted=$true }
         catch {
           $stopError=$_
           $service.Refresh()
           if ($service.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Stopped) { return }
           $native=$stopError.Exception.GetBaseException()
           if ($native -isnot [ComponentModel.Win32Exception] -or $native.NativeErrorCode -notin @(1061,1062)) { throw $stopError }
+        }
+        if ($stopAccepted) {
+          $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped,($deadline-[DateTime]::UtcNow))
+          return
         }
       }
       Start-Sleep -Milliseconds 250
