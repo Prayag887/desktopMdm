@@ -24,6 +24,7 @@ pub const REQUIRED: &[&str] = &[
     "Protection-Transaction.ps1",
     "Protection-Service.ps1",
     "Explorer-ContextPolicy.ps1",
+    "SignIn-PowerPolicy.ps1",
     "Start-EmiInstaller.ps1",
     "Protection-Package.ps1",
     "Install-PublisherTrust.ps1",

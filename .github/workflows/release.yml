@@ -75,6 +75,7 @@ jobs:
           ./packaging/windows/tests/Test-UntrustedRepair.ps1
           ./packaging/windows/tests/Test-PublisherTrust.ps1
           ./packaging/windows/tests/Test-ExplorerContextPolicy.ps1
+          ./packaging/windows/tests/Test-SignInPowerPolicy.ps1
       - name: Verify binaries do not require the Visual C++ runtime
         shell: pwsh
         run: |

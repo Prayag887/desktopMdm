@@ -220,6 +220,8 @@ $lockSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopI
 Register-ScheduledTask -TaskName 'EmiDeviceLockAll' -Action $lockAction -Trigger $lockTrigger -Principal $lockPrincipal -Settings $lockSettings -Force | Out-Null
 
 Enable-EmiExplorerContextPolicy $dataDir
+Disable-EmiSignInPowerPolicy $dataDir
+Write-Host 'Sign-in screen power button disabled.' -ForegroundColor Green
 Write-Host 'Explorer and desktop right-click menus are disabled for all users, including administrators. Sign out and back in to apply the setting.'
 
 } catch {

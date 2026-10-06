@@ -14,7 +14,7 @@ function Test-ProtectionIntegrity([string]$InstallDir, [string]$PublisherThumbpr
   $line = Get-Content -LiteralPath $manifestPath -TotalCount 1
   if (-not $line.StartsWith('# EMI-MANIFEST ')) { throw 'Invalid manifest header' }
   $manifest = $line.Substring(15) | ConvertFrom-Json
-  $required = @('emi-device-agent.exe', 'emi-device-ui.exe', 'RepairWatchdog.exe', 'emi-device-updater.exe', 'Get-DeviceProtection.ps1', 'Protection-Acl.ps1', 'Protection-Integrity.ps1', 'Get-SecurityPosture.ps1', 'Provision-BitLocker.ps1', 'Maintain-Protection.ps1', 'Set-EmiStateAcl.ps1', 'Protection-Transaction.ps1', 'Protection-Service.ps1', 'Explorer-ContextPolicy.ps1', 'Start-EmiInstaller.ps1', 'Protection-Package.ps1', 'Install-PublisherTrust.ps1', 'emi-publisher.cer', 'install.ps1', 'uninstall.ps1')
+  $required = @('emi-device-agent.exe', 'emi-device-ui.exe', 'RepairWatchdog.exe', 'emi-device-updater.exe', 'Get-DeviceProtection.ps1', 'Protection-Acl.ps1', 'Protection-Integrity.ps1', 'Get-SecurityPosture.ps1', 'Provision-BitLocker.ps1', 'Maintain-Protection.ps1', 'Set-EmiStateAcl.ps1', 'Protection-Transaction.ps1', 'Protection-Service.ps1', 'Explorer-ContextPolicy.ps1', 'SignIn-PowerPolicy.ps1', 'Start-EmiInstaller.ps1', 'Protection-Package.ps1', 'Install-PublisherTrust.ps1', 'emi-publisher.cer', 'install.ps1', 'uninstall.ps1')
   foreach ($name in $required) { if (-not $manifest.PSObject.Properties[$name]) { throw "Manifest omits $name" } }
   $failures = @()
   foreach ($entry in $manifest.PSObject.Properties) {
