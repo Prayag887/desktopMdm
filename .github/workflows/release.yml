@@ -144,6 +144,9 @@ jobs:
               if (-not $verified.verified) { throw 'Release manifest verification failed' }
             } finally { Remove-Item $pfx -Force -ErrorAction SilentlyContinue }
           }
+          if ($env:ALLOW_UNSIGNED -ne 'true') {
+            ./packaging/windows/tests/Test-Installer.ps1 -PackagePath (Resolve-Path dist/emi-device-agent-windows-x64).Path
+          }
           Compress-Archive dist/emi-device-agent-windows-x64/* dist/emi-device-agent-windows-x64.zip
           $hash = (Get-FileHash dist/emi-device-agent-windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  emi-device-agent-windows-x64.zip" | Set-Content dist/SHA256SUMS.txt -Encoding ascii

@@ -12,8 +12,8 @@ function Start-ProtectionTransaction([string]$InstallDir, [string]$DataDir) {
   foreach ($s in $services) { if ($s.StartName -notin @('LocalSystem','NT AUTHORITY\SYSTEM')) { throw 'Cannot transactionally service a non-LocalSystem installation' } }
   $task = Get-ScheduledTask -TaskName EmiDeviceLockAll -ErrorAction SilentlyContinue
   if ($task) { Export-ScheduledTask -TaskName EmiDeviceLockAll | Set-Content (Join-Path $backup 'task.xml') }
-  foreach ($name in 'EmiDeviceWatchdog','EmiDeviceAgent') { Stop-ProtectionService $name }
   try {
+  foreach ($name in 'EmiDeviceWatchdog','EmiDeviceAgent') { Stop-ProtectionService $name }
   $aclBackup = @()
   foreach ($pair in @(@($InstallDir,'program'), @($DataDir,'state'))) {
     if (Test-Path -LiteralPath $pair[0]) {
