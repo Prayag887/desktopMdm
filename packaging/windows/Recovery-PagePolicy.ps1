@@ -56,13 +56,14 @@ function Enable-EmiRecoveryPagePolicy([string]$DataDir) {
     $previous=$saved.previous
   }
   $temporary=Join-Path $DataDir ('.tmp-recovery-page-policy-'+[Guid]::NewGuid().ToString('N'))
+  $replaced=$temporary+'.previous'
   try {
     [IO.File]::WriteAllText($temporary,'')
     Set-EmiAcl $temporary -Private $true
     [IO.File]::WriteAllText($temporary,(@{previous=$previous;applied=$applied} | ConvertTo-Json -Depth 5 -Compress))
-    if (Test-Path -LiteralPath $backup) { [IO.File]::Replace($temporary,$backup,$null) }
+    if (Test-Path -LiteralPath $backup) { [IO.File]::Replace($temporary,$backup,$replaced) }
     else { [IO.File]::Move($temporary,$backup) }
-  } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+  } finally { Remove-Item -LiteralPath $temporary,$replaced -Force -ErrorAction SilentlyContinue }
   Set-EmiRecoveryPagePolicyState ([pscustomobject]@{present=$true;kind='String';value=$applied})
   $actual=Get-EmiRecoveryPagePolicyState
   if (-not $actual.present -or $actual.kind -ne 'String' -or $actual.value -ne $applied) { throw 'Recovery page visibility verification failed' }
