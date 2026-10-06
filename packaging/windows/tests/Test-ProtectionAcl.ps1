@@ -39,6 +39,9 @@ try {
   $credential=[Management.Automation.PSCredential]::new("$env:COMPUTERNAME\$name",$password)
   $probe=@'
 $ErrorActionPreference='Stop'
+$identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+$principal=[Security.Principal.WindowsPrincipal]::new($identity)
+if ($identity.User.Value -ne 'USER_SID' -or $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 11 }
 $p='BINARY'; $r='OUTPUT'; $denied=@()
 if ([IO.File]::ReadAllText($p) -ne 'protected') { exit 10 }
 foreach($action in @('overwrite','delete','rename','acl')) {
@@ -54,8 +57,13 @@ foreach($action in @('overwrite','delete','rename','acl')) {
 [IO.File]::WriteAllText($r,($denied | ConvertTo-Json -Compress))
 '@
   $probe=$probe.Replace('BINARY',$binary.Replace("'","''")).Replace('OUTPUT',$output.Replace("'","''"))
-  $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
-  $child=Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',$encoded) -Credential $credential -Wait -PassThru
+  $probe=$probe.Replace('USER_SID',(Get-LocalUser -Name $name).SID.Value)
+  $probePath=Join-Path $root 'standard-user-probe.ps1'
+  [IO.File]::WriteAllText($probePath,$probe)
+  Set-EmiAcl $probePath
+  # CreateProcessWithLogonW limits credential-based command lines to 1024 chars.
+  # Keep the script on disk instead of expanding it into an encoded command.
+  $child=Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"'+$probePath+'"')) -WorkingDirectory $root -Credential $credential -Wait -PassThru
   if ($child.ExitCode -ne 0) { throw 'Standard user cannot read protected executable or test did not execute' }
   $denied=@(Get-Content $output -Raw | ConvertFrom-Json)
   if ($denied.Count -ne 4 -or [IO.File]::ReadAllText($binary) -ne 'protected') { throw 'Standard user changed protected file' }
