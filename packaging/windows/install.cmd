@@ -1,6 +1,6 @@
 @echo off
 rem The launcher checks the Windows token and handles UAC independently of services.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Start-EmiInstaller.ps1"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0Start-EmiInstaller.ps1" %*
 set "INSTALL_EXIT=%ERRORLEVEL%"
 echo.
 if not "%INSTALL_EXIT%"=="0" (

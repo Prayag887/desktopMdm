@@ -19,7 +19,13 @@ try {
   $config.api_base='https://127.0.0.1:9'
   [IO.File]::WriteAllText($configPath,($config | ConvertTo-Json -Depth 8))
   foreach ($attempt in 1,2) {
-    & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Start-EmiInstaller.ps1') -SkipWingetBootstrap -SkipUiLaunch
+    if ($attempt -eq 1) {
+      # Exercise the actual .cmd; NUL answers its final pause on the CI runner.
+      $command='""' + (Join-Path $package 'install.cmd') + '" -SkipWingetBootstrap -SkipUiLaunch <NUL"'
+      & "$env:SystemRoot\System32\cmd.exe" /d /s /c $command
+    } else {
+      & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Start-EmiInstaller.ps1') -SkipWingetBootstrap -SkipUiLaunch
+    }
     if ($LASTEXITCODE -ne 0) { throw "Installer attempt $attempt failed" }
     foreach ($name in 'EmiDeviceAgent','EmiDeviceWatchdog') {
       if ((Get-Service $name).Status -ne 'Running') { throw "$name not running after install" }
