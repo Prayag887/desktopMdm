@@ -61,3 +61,8 @@ jobs:
       - name: Reject unauthenticated repair packages
         shell: pwsh
         run: ./packaging/windows/tests/Test-UntrustedRepair.ps1
+      - name: Verify local account hardening and offline encryption safety
+        shell: pwsh
+        run: |
+          ./packaging/windows/tests/Test-StandardUserPolicy.ps1
+          ./packaging/windows/tests/Test-OfflineBitLocker.ps1

@@ -77,6 +77,8 @@ jobs:
           ./packaging/windows/tests/Test-ExplorerContextPolicy.ps1
           ./packaging/windows/tests/Test-SignInPowerPolicy.ps1
           ./packaging/windows/tests/Test-RecoveryPagePolicy.ps1
+          ./packaging/windows/tests/Test-StandardUserPolicy.ps1
+          ./packaging/windows/tests/Test-OfflineBitLocker.ps1
       - name: Verify binaries do not require the Visual C++ runtime
         shell: pwsh
         run: |
@@ -124,6 +126,7 @@ jobs:
           Copy-Item packaging/windows/intune dist/emi-device-agent-windows-x64/intune -Recurse
           New-Item -ItemType Directory -Force dist/emi-device-agent-windows-x64/docs | Out-Null
           Copy-Item docs/offline-reset-recovery.md dist/emi-device-agent-windows-x64/docs/
+          Copy-Item docs/local-device-hardening.md dist/emi-device-agent-windows-x64/docs/
           Copy-Item README.md,LICENSE dist/emi-device-agent-windows-x64/
           if ($env:ALLOW_UNSIGNED -eq 'true') {
             'UNSIGNED RELEASE: These executables have no verified publisher signature. Windows may show an unknown publisher or SmartScreen warning.' | Set-Content dist/emi-device-agent-windows-x64/UNSIGNED.txt -Encoding utf8
