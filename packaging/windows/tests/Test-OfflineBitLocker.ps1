@@ -9,47 +9,51 @@ function Assert($condition,$message) { if (-not $condition) { throw $message } }
 function Get-CimInstance { [pscustomobject]@{ DriveType=2; FileSystem='NTFS' } }
 function Get-Tpm { [pscustomobject]@{ TpmPresent=$true; TpmReady=$true; TpmEnabled=$true } }
 function Confirm-SecureBootUEFI { return $true }
-function Get-BitLockerVolume { return $script:volume }
+function Get-BitLockerVolume { return $global:EmiOfflineTestVolume }
 function Add-BitLockerKeyProtector {
-  $script:addCalls++
-  $script:volume.KeyProtector=@([pscustomobject]@{KeyProtectorType='RecoveryPassword';KeyProtectorId='{fake-test-id}';RecoveryPassword=$script:password})
+  $global:EmiOfflineTestAddCalls++
+  $global:EmiOfflineTestVolume.KeyProtector=@([pscustomobject]@{KeyProtectorType='RecoveryPassword';KeyProtectorId='{fake-test-id}';RecoveryPassword=$global:EmiOfflineTestPassword})
 }
 function Enable-BitLocker {
   # Enabling encryption before a usable recovery backup is a regression.
-  $files=@(Get-ChildItem -LiteralPath $script:keyDirectory -Filter '*.json')
+  $files=@(Get-ChildItem -LiteralPath $global:EmiOfflineTestKeyDirectory -Filter '*.json')
   Assert ($files.Count -eq 1) 'Encryption started before recovery backup'
   $saved=Get-Content -LiteralPath $files[0].FullName -Raw | ConvertFrom-Json
-  Assert ($saved.keys[0].recoveryPassword -eq $script:password) 'Recovery backup is unusable'
-  $script:enableCalls++
-  $script:volume.VolumeStatus='EncryptionInProgress'
+  Assert ($saved.keys[0].recoveryPassword -eq $global:EmiOfflineTestPassword) 'Recovery backup is unusable'
+  $global:EmiOfflineTestEnableCalls++
+  $global:EmiOfflineTestVolume.VolumeStatus='EncryptionInProgress'
 }
 function Reset-Fixture {
-  $script:volume=[pscustomobject]@{LockStatus='Unlocked';VolumeStatus='FullyDecrypted';ProtectionStatus='Off';KeyProtector=@()}
-  $script:password='111111-111111-111111-111111-111111-111111-111111-111111'
-  $script:enableCalls=0; $script:addCalls=0
+  $global:EmiOfflineTestVolume=[pscustomobject]@{LockStatus='Unlocked';VolumeStatus='FullyDecrypted';ProtectionStatus='Off';KeyProtector=@()}
+  $global:EmiOfflineTestPassword='111111-111111-111111-111111-111111-111111-111111-111111'
+  $global:EmiOfflineTestEnableCalls=0; $global:EmiOfflineTestAddCalls=0
 }
 try {
   # Keep the real temp drive writable while treating a different drive as the mocked OS.
   $env:SystemDrive=if ($temporary.StartsWith('Q:',[StringComparison]::OrdinalIgnoreCase)) { 'Z:' } else { 'Q:' }
   Reset-Fixture
-  $script:keyDirectory=Join-Path $temporary 'valid'
-  $output=& $tool -RecoveryKeyDirectory $script:keyDirectory -Confirm:$false | Out-String
-  Assert ($script:enableCalls -eq 1) 'Encryption was not enabled after backup'
-  Assert (-not $output.Contains($script:password)) 'Recovery secret leaked to output'
+  $global:EmiOfflineTestKeyDirectory=Join-Path $temporary 'valid'
+  $output=& $tool -RecoveryKeyDirectory $global:EmiOfflineTestKeyDirectory -Confirm:$false | Out-String
+  Assert ($global:EmiOfflineTestEnableCalls -eq 1) 'Encryption was not enabled after backup'
+  Assert (-not $output.Contains($global:EmiOfflineTestPassword)) 'Recovery secret leaked to output'
   Reset-Fixture
-  $script:keyDirectory=Join-Path $temporary 'dry-run'
-  $null=& $tool -RecoveryKeyDirectory $script:keyDirectory -WhatIf
-  Assert ($script:addCalls -eq 0 -and $script:enableCalls -eq 0 -and -not (Test-Path $script:keyDirectory)) 'WhatIf changed device state'
+  $global:EmiOfflineTestKeyDirectory=Join-Path $temporary 'dry-run'
+  $null=& $tool -RecoveryKeyDirectory $global:EmiOfflineTestKeyDirectory -WhatIf
+  Assert ($global:EmiOfflineTestAddCalls -eq 0 -and $global:EmiOfflineTestEnableCalls -eq 0 -and -not (Test-Path $global:EmiOfflineTestKeyDirectory)) 'WhatIf changed device state'
   Reset-Fixture
-  $script:password='invalid'
-  $script:keyDirectory=Join-Path $temporary 'invalid'
+  $global:EmiOfflineTestPassword='invalid'
+  $global:EmiOfflineTestKeyDirectory=Join-Path $temporary 'invalid'
   $failed=$false
-  try { $null=& $tool -RecoveryKeyDirectory $script:keyDirectory -Confirm:$false } catch { $failed=$true }
-  Assert ($failed -and $script:enableCalls -eq 0) 'Encryption started without a usable recovery password'
+  try { $null=& $tool -RecoveryKeyDirectory $global:EmiOfflineTestKeyDirectory -Confirm:$false } catch { $failed=$true }
+  Assert ($failed -and $global:EmiOfflineTestEnableCalls -eq 0) 'Encryption started without a usable recovery password'
   Reset-Fixture
-  $script:keyDirectory=Join-Path $temporary 'existing'
-  $script:volume.VolumeStatus='FullyEncrypted'; $script:volume.ProtectionStatus='On'
-  $null=& $tool -RecoveryKeyDirectory $script:keyDirectory -Confirm:$false
-  Assert ($script:enableCalls -eq 0) 'Existing encryption was reconfigured'
+  $global:EmiOfflineTestKeyDirectory=Join-Path $temporary 'existing'
+  $global:EmiOfflineTestVolume.VolumeStatus='FullyEncrypted'; $global:EmiOfflineTestVolume.ProtectionStatus='On'
+  $null=& $tool -RecoveryKeyDirectory $global:EmiOfflineTestKeyDirectory -Confirm:$false
+  Assert ($global:EmiOfflineTestEnableCalls -eq 0) 'Existing encryption was reconfigured'
   Write-Output 'Offline BitLocker: backup-before-encryption, no secret output, dry-run, invalid-key rejection and existing encryption preservation passed.'
-} finally { $env:SystemDrive=$originalDrive; Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue }
+} finally {
+  $env:SystemDrive=$originalDrive
+  Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Variable -Scope Global -Name EmiOfflineTestVolume,EmiOfflineTestPassword,EmiOfflineTestEnableCalls,EmiOfflineTestAddCalls,EmiOfflineTestKeyDirectory -ErrorAction SilentlyContinue
+}
