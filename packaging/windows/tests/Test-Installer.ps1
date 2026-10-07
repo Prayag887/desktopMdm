@@ -16,6 +16,7 @@ $originalSignInPowerPolicy=Get-EmiSignInPowerPolicyState
 $originalRecoveryPagePolicy=Get-EmiRecoveryPagePolicyState
 $testCommandPublicKey='11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo='
 $ps=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$serverRunner=(Get-CimInstance Win32_OperatingSystem).ProductType -ne 1
 try {
   New-NetFirewallRule -DisplayName 'EMI installer test isolation' -Direction Outbound -Program (Join-Path $install 'emi-device-agent.exe') -Action Block | Out-Null
   # Seed only local identity and an unreachable loopback API: no production API calls.
@@ -56,8 +57,16 @@ try {
     if (-not $explorerPolicy.present -or $explorerPolicy.value -ne 1) { throw 'Machine-wide Explorer menus were not disabled' }
     $shell=New-Object -ComObject Shell.Application
     try { if ($shell.IsRestricted('Explorer','NoViewContextMenu') -ne 1) { throw 'Windows shell did not recognize the Explorer policy' } } finally { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
-    if ($exitCode -ne 0) { throw "Installer attempt $attempt failed" }
-    if ($attempt -eq 1) {
+    $expectedCaptureFailure=($attempt -eq 1 -and $serverRunner)
+    if ($expectedCaptureFailure) {
+      if ($exitCode -ne 1) { throw 'Server capture must report installation failure, not success' }
+      $recoveryPackage=Join-Path $env:SystemDrive 'Recovery\Customizations\EmiDeviceAgent.ppkg'
+      if (Test-Path -LiteralPath $recoveryPackage) { throw 'Unsupported server capture published a package' }
+      $logs=@(Get-ChildItem (Join-Path $env:SystemDrive 'Recovery\Customizations\EmiCapture-*\ScanState.log'))
+      if ($logs.Count -ne 1 -or (Get-Content $logs[0].FullName -Raw) -notmatch 'Server Operating systems are not supported') { throw 'Expected actual Microsoft ScanState server rejection was not observed' }
+      Write-Output 'Actual install.cmd and Microsoft ADK preparation verified. ScanState rejected Windows Server and no package was published, as expected. Windows 11 capture and reset restoration remain untested.'
+    } elseif ($exitCode -ne 0) { throw "Installer attempt $attempt failed" }
+    if ($attempt -eq 1 -and -not $serverRunner) {
       $recoveryPackage=Join-Path $env:SystemDrive 'Recovery\Customizations\EmiDeviceAgent.ppkg'
       if (-not (Test-Path -LiteralPath $recoveryPackage -PathType Leaf) -or (Get-Item -LiteralPath $recoveryPackage).Length -eq 0) { throw 'install.cmd did not publish a nonempty recovery package' }
       $report=Get-ChildItem (Join-Path $env:SystemDrive 'Recovery\Customizations\EmiCapture-*\capture-report.json') | Select-Object -Last 1
