@@ -14,6 +14,7 @@ Copy-Item -LiteralPath $PackagePath -Destination $package -Recurse
 $originalExplorerPolicy=Get-EmiExplorerPolicyState
 $originalSignInPowerPolicy=Get-EmiSignInPowerPolicyState
 $originalRecoveryPagePolicy=Get-EmiRecoveryPagePolicyState
+$testCommandPublicKey='11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo='
 $ps=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 try {
   New-NetFirewallRule -DisplayName 'EMI installer test isolation' -Direction Outbound -Program (Join-Path $install 'emi-device-agent.exe') -Action Block | Out-Null
@@ -36,11 +37,16 @@ try {
       $child=[Diagnostics.Process]::Start($start)
       try { $child.WaitForExit(); $exitCode=$child.ExitCode } finally { $child.Dispose() }
     } elseif ($attempt -eq 3) {
-      & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Provision.ps1') -EnrolledUser InstallerTest -SkipUiLaunch
+      & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Provision.ps1') -EnrolledUser InstallerTest -SkipUiLaunch -CommandSigningKeyId 1000 -CommandSigningPublicKey $testCommandPublicKey
       $exitCode=$LASTEXITCODE
     } else {
-      & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Start-EmiInstaller.ps1') -SkipWingetBootstrap -SkipUiLaunch
+      & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Start-EmiInstaller.ps1') -SkipWingetBootstrap -SkipUiLaunch -CommandSigningKeyId 999 -CommandSigningPublicKey $testCommandPublicKey
       $exitCode=$LASTEXITCODE
+    }
+    if ($attempt -ge 2) {
+      $keyId=if ($attempt -eq 2) { '999' } else { '1000' }
+      $trusted=(Get-Content $configPath -Raw | ConvertFrom-Json).trusted_command_signing_keys.PSObject.Properties[$keyId]
+      if (-not $trusted -or $trusted.Value -ne $testCommandPublicKey) { throw 'Provisioning wrapper lost the command signing public key' }
     }
     $recoveryPolicy=Get-EmiRecoveryPagePolicyState
     if (-not $recoveryPolicy.present -or $recoveryPolicy.kind -ne 'String' -or $recoveryPolicy.value -ne (Get-EmiRecoveryHiddenValue $originalRecoveryPagePolicy)) { throw 'Recovery page policy was not applied' }
