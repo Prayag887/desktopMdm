@@ -9,10 +9,12 @@ The Windows account/encryption tools are manufacturer-independent and target sup
 Prepare the two local accounts, an owner NTFS USB drive and the ADK ScanState tools as described below and in the reset recovery guide. From elevated 64-bit Windows PowerShell, run:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Provision.ps1 -EnrolledUser 'Customer' -Harden -RecoveryAdministrator 'DeviceOwner' -OfflineRecoveryKeyDirectory 'E:\DeviceOwnerKeys' -ScanStateDir 'D:\ScanState_amd64'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Provision.ps1 -EnrolledUser 'Customer' -Harden -RecoveryAdministrator 'DeviceOwner' -OfflineRecoveryKeyDirectory 'E:\DeviceOwnerKeys' -ScanStateDir 'D:\ScanState_amd64' -CommandSigningKeyId 1 -CommandSigningPublicKey 'SERVER_ED25519_PUBLIC_KEY_BASE64'
 ```
 
 Replace these account names and paths per PC. Hardened provisioning installs the signed agent, verifies owner credentials and reduces daily-user privileges, saves recovery keys and configures encryption, then captures reset recovery. Failures stop subsequent steps and identify that the device is not ready for handoff; completed security changes are retained. The historical `provision.cmd username` invocation remains installation-only. Use the explicit PowerShell command above for hardening.
+
+Use the real server signing key ID and 32-byte Ed25519 public key in base64, not the example placeholder. Hardened provisioning requires them; ordinary installation also supports those parameters. Configure `-RecoveryPublicKeyHex` when using separately issued signed offline recovery tokens. After enrollment, verify a signed test LOCK followed by a signed UNLOCK before customer handoff.
 
 The agent's existing signed server commands still control payment lock/unlock. These tools neither create a local unlock button nor infer payment status. Hardware hardening does not guarantee uninterrupted payment restriction across a reset: restoring a snapshot can roll back state, and fresh payment decisions still require the existing API.
 

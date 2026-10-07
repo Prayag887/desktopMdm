@@ -24,11 +24,15 @@ param(
   [switch]$Harden,
   [string]$RecoveryAdministrator = '',
   [string]$OfflineRecoveryKeyDirectory = '',
-  [string]$ScanStateDir = ''
+  [string]$ScanStateDir = '',
+  [UInt64]$CommandSigningKeyId = 0,
+  [string]$CommandSigningPublicKey = '',
+  [string]$RecoveryPublicKeyHex = ''
 )
 $ErrorActionPreference = 'Stop'
 if ($Harden) {
   if (-not $RecoveryAdministrator -or -not $OfflineRecoveryKeyDirectory -or -not $ScanStateDir) { throw 'Harden requires RecoveryAdministrator, OfflineRecoveryKeyDirectory and ScanStateDir.' }
+  if ($CommandSigningKeyId -eq 0 -or [string]::IsNullOrWhiteSpace($CommandSigningPublicKey)) { throw 'Harden requires the server CommandSigningKeyId and CommandSigningPublicKey so payment commands can be authenticated.' }
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   try { $administrator = ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
   finally { $identity.Dispose() }
@@ -38,6 +42,8 @@ if ($Harden) {
 $options=@()
 if (-not $WithWinget) { $options += '-SkipWingetBootstrap' }
 if ($SkipUiLaunch) { $options += '-SkipUiLaunch' }
+if ($CommandSigningKeyId -ne 0 -or $CommandSigningPublicKey) { $options += @('-CommandSigningKeyId', $CommandSigningKeyId.ToString(), '-CommandSigningPublicKey', $CommandSigningPublicKey) }
+if ($RecoveryPublicKeyHex) { $options += @('-RecoveryPublicKeyHex', $RecoveryPublicKeyHex) }
 $powershell=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 & $powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Start-EmiInstaller.ps1') -InstallDir $InstallDir @options
 $result=$LASTEXITCODE

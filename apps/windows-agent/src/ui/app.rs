@@ -375,7 +375,7 @@ mod tests {
         assert_ne!(output.shapes.len(), 0);
         app.current_password.push_str("test-only");
         app.clear_passwords();
-        assert_eq!(app.current_password, "");
+        assert_eq!(app.current_password.as_str(), "");
         assert!(!app.confirm_disable_bios);
         for action in [
             BiosPasswordAction::Create,
@@ -516,7 +516,7 @@ mod tests {
         crate::recovery_service::process(dir.path(), device, Utc::now()).unwrap();
         app.poll_recovery_unlock(&context);
         assert!(!app.enforced);
-        assert_eq!(app.recovery_input, "");
+        assert_eq!(app.recovery_input.as_str(), "");
         assert!(app.pending_recovery.is_none());
     }
 }
