@@ -353,7 +353,7 @@ mod tests {
         let output = context.run(egui::RawInput::default(), |context| {
             egui::CentralPanel::default().show(context, |ui| app.render_health(ui));
         });
-        assert!(!output.shapes.is_empty());
+        assert_ne!(output.shapes.len(), 0);
     }
 
     #[test]
@@ -368,14 +368,14 @@ mod tests {
                 app.render_bluescreen(ui, context);
             });
         });
-        assert!(!output.shapes.is_empty());
+        assert_ne!(output.shapes.len(), 0);
         let output = context.run(egui::RawInput::default(), |context| {
             app.render_blue_screen(context);
         });
-        assert!(!output.shapes.is_empty());
+        assert_ne!(output.shapes.len(), 0);
         app.current_password.push_str("test-only");
         app.clear_passwords();
-        assert!(app.current_password.is_empty());
+        assert_eq!(app.current_password, "");
         assert!(!app.confirm_disable_bios);
         for action in [
             BiosPasswordAction::Create,
@@ -386,7 +386,7 @@ mod tests {
             let output = context.run(egui::RawInput::default(), |context| {
                 egui::CentralPanel::default().show(context, |ui| app.render_firmware(ui));
             });
-            assert!(!output.shapes.is_empty());
+            assert_ne!(output.shapes.len(), 0);
         }
     }
 
@@ -516,7 +516,7 @@ mod tests {
         crate::recovery_service::process(dir.path(), device, Utc::now()).unwrap();
         app.poll_recovery_unlock(&context);
         assert!(!app.enforced);
-        assert!(app.recovery_input.is_empty());
+        assert_eq!(app.recovery_input, "");
         assert!(app.pending_recovery.is_none());
     }
 }
