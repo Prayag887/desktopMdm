@@ -2,9 +2,23 @@
 
 `Provision-OfflineRecovery.ps1` prepares a local Windows push-button reset package. No cloud service is needed to capture or restore the installed application. The agent still uses its existing API for enrollment and new management commands.
 
-This is a per-device provisioning step, separate from normal installation. It captures the installed applications and Windows settings baseline, plus explicit agent binaries, ProgramData state, repair cache, service registration and companion task artifacts. It is not an agent-only installer. Prepare a clean organization-owned PC before handing it to a user. The package can contain device credentials and captured state: never reuse it across devices or distribute it as a release artifact.
+Recovery capture is a per-device provisioning step integrated into the updated `install.cmd`. It captures the installed applications and Windows settings baseline, plus explicit agent binaries, ProgramData state, repair cache, service registration and companion task artifacts. It is not an agent-only installer. Prepare a clean organization-owned PC before handing it to a user. The package can contain device credentials and captured state: never reuse it across devices or distribute it as a release artifact.
 
 ## Prepare a Windows x64 PC
+
+### Capture during installation
+
+The updated source `install.cmd` automatically prepares Microsoft ScanState and requires successful recovery capture before returning success. Run `install.cmd` as administrator with internet access. If the required ADK components are absent, the installer downloads Microsoft's signed ADK setup and silently installs Deployment Tools and USMT (CEIP disabled, no automatic restart). It then combines the x64 USMT and Windows Setup files in a protected directory under the agent installation. A complete installed ADK is reused. Microsoft ADK remains installed afterward; capture includes the PC application/settings baseline.
+
+For offline deployment, you can still provide a prepared directory:
+
+```cmd
+install.cmd -ScanStateDir "D:\ScanState_amd64" -CommandSigningKeyId 1 -CommandSigningPublicKey "SERVER_ED25519_PUBLIC_KEY_BASE64"
+```
+
+Replace the public key placeholder with your server's actual deployment public key. Download, signature, ADK setup or capture failures return failure even if the application is already installed; that PC is not ready for handoff. If ADK requests a restart, restart and rerun installation. An existing recovery package must be explicitly archived before recapturing an approved upgrade. Do not distribute packages between PCs.
+
+Direct `Start-EmiInstaller.ps1` and `Provision.ps1` calls retain their existing behavior unless recovery is explicitly requested; `Provision.ps1 -Harden` already captures recovery after its hardening steps. This integration is not included in the previously published v0.6.52 binary download. Capture completion still records `resetValidated: false` and does not replace the acceptance tests below.
 
 1. Install a signed production agent release normally, with deployment public keys. Verify both services are running and the companion launches at logon.
 2. On a technician PC, install the Windows ADK USMT and Deployment Tools. Prepare a matching x64 ScanState directory by copying USMT `amd64` files and Windows Setup `amd64\Sources` files into one directory, following Microsoft's deployment guide below. Include `Config_AppsAndSettings.xml`. Transfer that directory by USB if the target is offline. The script does not download tools.
@@ -37,3 +51,5 @@ Captured state is a snapshot. A reset can restore an older lock state, token, re
 Deleting recovery files/partitions, disabling restoration of preinstalled apps, installing an unrelated recovery image, a USB clean install or replacing the SSD can bypass local recovery. This script does not change firmware or disk partitions, disable recovery, or make the app undeletable. An offline restore does not provide fresh server commands.
 
 Microsoft references: [Deploy push-button reset features](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/deploy-push-button-reset-features?view=windows-11), [Recovery components](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/recovery-strategy-for-common-customizations?view=windows-11), [USMT XML elements](https://learn.microsoft.com/en-us/windows/deployment/usmt/usmt-xml-elements-library).
+
+Automatic ADK setup references: [ADK downloads and supported Windows versions](https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install), [silent ADK installation](https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-offline-install), [ScanState file preparation](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/deploy-pbr-features-using-auto-apply).
