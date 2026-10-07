@@ -165,10 +165,10 @@ mod tests {
         let health = collect_health(id);
         assert_eq!(health.device_id, id);
         assert_eq!(health.agent_version, env!("CARGO_PKG_VERSION"));
-        assert!(!health.hostname.is_empty());
-        assert!(!health.os_version.is_empty());
-        assert!(!health.manufacturer.is_empty());
-        assert!(!health.model.is_empty());
+        assert_ne!(health.hostname, "");
+        assert_ne!(health.os_version, "");
+        assert_ne!(health.manufacturer, "");
+        assert_ne!(health.model, "");
     }
 
     #[test]
