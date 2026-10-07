@@ -24,6 +24,7 @@ jobs:
           ./packaging/windows/tests/Test-OfflineBitLocker.ps1
           ./packaging/windows/tests/Test-StandardUserNative.ps1
           ./packaging/windows/tests/Test-RecoveryTools.ps1
+          ./packaging/windows/tests/Test-RecoveryTaskId.ps1
   rust:
     runs-on: ubuntu-latest
     steps:
