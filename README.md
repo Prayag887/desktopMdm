@@ -16,6 +16,8 @@ Payment and customer administration remain in the hosted admin product. BIOS pas
 
 ## Enterprise anti-theft deployment
 
+For offline restoration after supported Windows resets, prepare a per-device local recovery package with `Provision-OfflineRecovery.ps1`. See [Offline reset recovery](docs/offline-reset-recovery.md) for ADK prerequisites, capture commands, state limitations, and required reset tests. Package creation alone does not confirm successful restoration; this option does not cover disk wipes or SSD replacement.
+
 This repository provides the Windows agent and its administrator-controlled restriction state. It does **not** make a Windows program undeletable, survive a bare-metal disk image by itself, prevent an SSD owner from formatting the media, or enroll a device into a Microsoft tenant. Those outcomes require an organization-owned deployment stack:
 
 - Register the motherboard/device identity with Windows Autopilot, preferably through the OEM or reseller. Registration and an assigned deployment profile are prerequisites for organizational provisioning to return after Windows Setup or a supported reset.

@@ -122,6 +122,8 @@ jobs:
           Copy-Item packaging/windows/recovery-public-key.hex dist/emi-device-agent-windows-x64/
           Copy-Item packaging/windows/emi-publisher.cer dist/emi-device-agent-windows-x64/
           Copy-Item packaging/windows/intune dist/emi-device-agent-windows-x64/intune -Recurse
+          New-Item -ItemType Directory -Force dist/emi-device-agent-windows-x64/docs | Out-Null
+          Copy-Item docs/offline-reset-recovery.md dist/emi-device-agent-windows-x64/docs/
           Copy-Item README.md,LICENSE dist/emi-device-agent-windows-x64/
           if ($env:ALLOW_UNSIGNED -eq 'true') {
             'UNSIGNED RELEASE: These executables have no verified publisher signature. Windows may show an unknown publisher or SmartScreen warning.' | Set-Content dist/emi-device-agent-windows-x64/UNSIGNED.txt -Encoding utf8
@@ -163,6 +165,7 @@ jobs:
           name: ${{ github.ref_name }}
           body: >-
             ${{ env.ALLOW_UNSIGNED == 'true' && '**Unsigned release:** These executables have no verified publisher signature. Windows may show an unknown publisher or SmartScreen warning. See UNSIGNED.txt in the download.' || (env.PRIVATE_TRUST == 'true' && '**Private publisher signature:** Signed with the repository self-issued certificate. Run install.cmd as administrator to install the pinned public certificate before installing the app. This is not a publicly trusted publisher identity.' || '') }}
+            Offline reset recovery tooling is included. On each Windows x64 PC, prepare the ADK ScanState tools and run Provision-OfflineRecovery.ps1 as administrator. See docs/offline-reset-recovery.md in the download. This is an additional per-device setup step; installing the release alone does not enable reset restoration. Supported reset behavior must be tested on the target Windows build/hardware. Disk wipes, SSD replacement, and local-administrator removal are outside the local recovery guarantee. Captured state is a snapshot; fresh management commands still require the existing API.
           generate_release_notes: true
           prerelease: ${{ env.ALLOW_UNSIGNED == 'true' }}
           files: |
