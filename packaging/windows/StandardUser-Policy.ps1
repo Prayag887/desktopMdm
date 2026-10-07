@@ -16,7 +16,7 @@ function Set-EmiStandardUser([string]$DailyUser, [string]$RecoveryAdministrator,
   $usersGroup = Get-LocalGroup -SID 'S-1-5-32-545' -ErrorAction Stop
   # Resolve every membership before making any change. Fail on unreadable groups.
   $removals = @()
-  foreach ($sid in @('S-1-5-32-544','S-1-5-32-547','S-1-5-32-550','S-1-5-32-551','S-1-5-32-556','S-1-5-32-578')) {
+  foreach ($sid in @('S-1-5-32-544','S-1-5-32-547','S-1-5-32-550','S-1-5-32-551','S-1-5-32-555','S-1-5-32-556','S-1-5-32-578','S-1-5-32-580')) {
     $group = Get-LocalGroup -SID $sid -ErrorAction SilentlyContinue
     if ($group -and @((Get-LocalGroupMember -Group $group -ErrorAction Stop) | Where-Object { $_.SID.Value -eq $user.SID.Value }).Count -gt 0) { $removals += $group }
   }

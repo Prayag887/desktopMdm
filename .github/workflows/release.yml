@@ -79,6 +79,7 @@ jobs:
           ./packaging/windows/tests/Test-RecoveryPagePolicy.ps1
           ./packaging/windows/tests/Test-StandardUserPolicy.ps1
           ./packaging/windows/tests/Test-OfflineBitLocker.ps1
+          ./packaging/windows/tests/Test-StandardUserNative.ps1
       - name: Verify binaries do not require the Visual C++ runtime
         shell: pwsh
         run: |
@@ -168,6 +169,7 @@ jobs:
           name: ${{ github.ref_name }}
           body: >-
             ${{ env.ALLOW_UNSIGNED == 'true' && '**Unsigned release:** These executables have no verified publisher signature. Windows may show an unknown publisher or SmartScreen warning. See UNSIGNED.txt in the download.' || (env.PRIVATE_TRUST == 'true' && '**Private publisher signature:** Signed with the repository self-issued certificate. Run install.cmd as administrator to install the pinned public certificate before installing the app. This is not a publicly trusted publisher identity.' || '') }}
+            Hardened local provisioning now verifies an owner administrator, reduces the named customer's local privileges, saves offline BitLocker recovery keys before enabling encryption, and captures offline reset recovery. The service verifies the installed UI executable path rather than trusting its process name. See docs/local-device-hardening.md for the explicit Provision.ps1 -Harden command and prerequisites. These deployment tools require a trusted Windows installation and per-PC setup; they do not make the application undeletable.
             Offline reset recovery tooling is included. On each Windows x64 PC, prepare the ADK ScanState tools and run Provision-OfflineRecovery.ps1 as administrator. See docs/offline-reset-recovery.md in the download. This is an additional per-device setup step; installing the release alone does not enable reset restoration. Supported reset behavior must be tested on the target Windows build/hardware. Disk wipes, SSD replacement, and local-administrator removal are outside the local recovery guarantee. Captured state is a snapshot; fresh management commands still require the existing API.
           generate_release_notes: true
           prerelease: ${{ env.ALLOW_UNSIGNED == 'true' }}

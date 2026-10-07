@@ -6,8 +6,8 @@ function Reset-Fixture {
   $script:daily = [pscustomobject]@{ Name='Daily'; Enabled=$true; SID=[pscustomobject]@{ Value='S-1-5-21-1-1001' } }
   $script:owner = [pscustomobject]@{ Name='Owner'; Enabled=$true; SID=[pscustomobject]@{ Value='S-1-5-21-1-1002' } }
   $script:groups = @{}
-  foreach ($sid in @('S-1-5-32-544','S-1-5-32-545','S-1-5-32-551')) { $script:groups[$sid]=[pscustomobject]@{Name=$sid; SID=$sid} }
-  $script:members = @{ 'S-1-5-32-544'=@($script:daily,$script:owner); 'S-1-5-32-545'=@(); 'S-1-5-32-551'=@($script:daily) }
+  foreach ($sid in @('S-1-5-32-544','S-1-5-32-545','S-1-5-32-551','S-1-5-32-555','S-1-5-32-580')) { $script:groups[$sid]=[pscustomobject]@{Name=$sid; SID=$sid} }
+  $script:members = @{ 'S-1-5-32-544'=@($script:daily,$script:owner); 'S-1-5-32-545'=@(); 'S-1-5-32-551'=@($script:daily); 'S-1-5-32-555'=@($script:daily); 'S-1-5-32-580'=@($script:daily) }
   $script:failGroup = ''
   $script:changes = 0
 }
@@ -22,7 +22,7 @@ function Remove-LocalGroupMember($Group, $Member) {
 }
 Reset-Fixture
 $result = Set-EmiStandardUser Daily Owner $script:owner.SID.Value
-Assert ($result.removedGroups.Count -eq 2) 'Privileged groups were not removed'
+Assert ($result.removedGroups.Count -eq 4) 'Privileged/remote access groups were not removed'
 Assert (@($script:members['S-1-5-32-544']).Count -eq 1 -and $script:members['S-1-5-32-544'][0].Name -eq 'Owner') 'Owner admin was not preserved'
 Assert ($script:members['S-1-5-32-545'][0].Name -eq 'Daily') 'Standard Users membership missing'
 $before = $script:changes
