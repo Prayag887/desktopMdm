@@ -57,6 +57,16 @@ try {
     $shell=New-Object -ComObject Shell.Application
     try { if ($shell.IsRestricted('Explorer','NoViewContextMenu') -ne 1) { throw 'Windows shell did not recognize the Explorer policy' } } finally { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
     if ($exitCode -ne 0) { throw "Installer attempt $attempt failed" }
+    if ($attempt -eq 1) {
+      $recoveryPackage=Join-Path $env:SystemDrive 'Recovery\Customizations\EmiDeviceAgent.ppkg'
+      if (-not (Test-Path -LiteralPath $recoveryPackage -PathType Leaf) -or (Get-Item -LiteralPath $recoveryPackage).Length -eq 0) { throw 'install.cmd did not publish a nonempty recovery package' }
+      $report=Get-ChildItem (Join-Path $env:SystemDrive 'Recovery\Customizations\EmiCapture-*\capture-report.json') | Select-Object -Last 1
+      if (-not $report) { throw 'Recovery capture report missing' }
+      $capture=Get-Content $report.FullName -Raw | ConvertFrom-Json
+      if ($capture.resetValidated -ne $false -or $capture.sha256 -ne (Get-FileHash -LiteralPath $recoveryPackage -Algorithm SHA256).Hash) { throw 'Recovery report did not accurately describe the package' }
+      Write-Output 'Actual install.cmd, Microsoft ADK preparation and nonempty ScanState capture verified; reset restoration remains untested.'
+      Remove-Item -LiteralPath $recoveryPackage -Force
+    }
     foreach ($name in 'EmiDeviceAgent','EmiDeviceWatchdog') {
       if ((Get-Service $name).Status -ne 'Running') { throw "$name not running after install" }
       $binary=if ($name -eq 'EmiDeviceAgent') { 'emi-device-agent.exe' } else { 'RepairWatchdog.exe' }

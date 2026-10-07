@@ -17,6 +17,7 @@ concurrency:
 jobs:
   windows-desktop:
     runs-on: windows-latest
+    timeout-minutes: 60
     env:
       # Avoid requiring the Microsoft Visual C++ Redistributable on customer PCs.
       RUSTFLAGS: -C target-feature=+crt-static
@@ -80,6 +81,7 @@ jobs:
           ./packaging/windows/tests/Test-StandardUserPolicy.ps1
           ./packaging/windows/tests/Test-OfflineBitLocker.ps1
           ./packaging/windows/tests/Test-StandardUserNative.ps1
+          ./packaging/windows/tests/Test-RecoveryTools.ps1
       - name: Verify binaries do not require the Visual C++ runtime
         shell: pwsh
         run: |
@@ -159,6 +161,16 @@ jobs:
           Compress-Archive dist/emi-device-agent-windows-x64/* dist/emi-device-agent-windows-x64.zip
           $hash = (Get-FileHash dist/emi-device-agent-windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  emi-device-agent-windows-x64.zip" | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+      - name: Upload recovery capture diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-capture-diagnostics
+          if-no-files-found: ignore
+          path: |
+            C:/Recovery/Customizations/EmiCapture-*/ScanState.log
+            C:/Recovery/Customizations/EmiCapture-*/capture-report.json
+            C:/Recovery/Customizations/EmiCapture-*/EmiDeviceAgent.xml
       - uses: actions/upload-artifact@v4
         with:
           name: emi-device-agent-windows-x64
@@ -170,7 +182,7 @@ jobs:
           body: >-
             ${{ env.ALLOW_UNSIGNED == 'true' && '**Unsigned release:** These executables have no verified publisher signature. Windows may show an unknown publisher or SmartScreen warning. See UNSIGNED.txt in the download.' || (env.PRIVATE_TRUST == 'true' && '**Private publisher signature:** Signed with the repository self-issued certificate. Run install.cmd as administrator to install the pinned public certificate before installing the app. This is not a publicly trusted publisher identity.' || '') }}
             Hardened local provisioning now verifies an owner administrator, reduces the named customer's local privileges, saves offline BitLocker recovery keys before enabling encryption, and captures offline reset recovery. The service verifies the installed UI executable path rather than trusting its process name. See docs/local-device-hardening.md for the explicit Provision.ps1 -Harden command and prerequisites. These deployment tools require a trusted Windows installation and per-PC setup; they do not make the application undeletable.
-            Offline reset recovery tooling is included. On each Windows x64 PC, prepare the ADK ScanState tools and run Provision-OfflineRecovery.ps1 as administrator. See docs/offline-reset-recovery.md in the download. This is an additional per-device setup step; installing the release alone does not enable reset restoration. Supported reset behavior must be tested on the target Windows build/hardware. Disk wipes, SSD replacement, and local-administrator removal are outside the local recovery guarantee. Captured state is a snapshot; fresh management commands still require the existing API.
+            install.cmd now automatically prepares Microsoft ADK ScanState tools and captures a device-specific offline reset recovery package. Initial tool setup requires internet access and can take several minutes. Installation reports failure if tool setup or capture fails. Existing recovery packages require explicit archiving before recapture. See docs/offline-reset-recovery.md. Reset restoration remains unverified on physical Windows 11 devices; there is no factory-reset guarantee. Disabling preinstalled-app restoration, disk wipes, SSD replacement, and local-administrator removal can bypass local recovery. Captured state is a snapshot; fresh management commands require network access and valid enrollment with the existing API.
           generate_release_notes: true
           prerelease: ${{ env.ALLOW_UNSIGNED == 'true' }}
           files: |
