@@ -53,10 +53,7 @@ try {
     if (-not $recoveryPolicy.present -or $recoveryPolicy.kind -ne 'String' -or $recoveryPolicy.value -ne (Get-EmiRecoveryHiddenValue $originalRecoveryPagePolicy)) { throw 'Recovery page policy was not applied' }
     $powerPolicy=Get-EmiSignInPowerPolicyState
     if (-not $powerPolicy.present -or $powerPolicy.kind -ne 'DWord' -or $powerPolicy.value -ne 0) { throw 'Sign-in power button policy was not disabled' }
-    $explorerPolicy=Get-EmiExplorerPolicyState
-    if (-not $explorerPolicy.present -or $explorerPolicy.value -ne 1) { throw 'Machine-wide Explorer menus were not disabled' }
-    $shell=New-Object -ComObject Shell.Application
-    try { if ($shell.IsRestricted('Explorer','NoViewContextMenu') -ne 1) { throw 'Windows shell did not recognize the Explorer policy' } } finally { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
+    if ((Get-EmiExplorerPolicyState | ConvertTo-Json -Compress) -ne ($originalExplorerPolicy | ConvertTo-Json -Compress)) { throw 'Installer changed Explorer context-menu policy' }
     $expectedCaptureFailure=($attempt -eq 1 -and $serverRunner)
     if ($expectedCaptureFailure) {
       if ($exitCode -ne 1) { throw 'Server capture must report installation failure, not success' }
@@ -118,7 +115,7 @@ try {
   if ((Get-Content $configPath -Raw | ConvertFrom-Json).device_id -ne $identity) { throw 'Rollback lost device identity' }
   if ((Get-EmiRecoveryPagePolicyState).value -ne (Get-EmiRecoveryHiddenValue $originalRecoveryPagePolicy)) { throw 'Rollback lost Recovery page policy' }
   if ((Get-EmiSignInPowerPolicyState).value -ne 0) { throw 'Rollback lost sign-in power policy' }
-  if ((Get-EmiExplorerPolicyState).value -ne 1) { throw 'Rollback lost installed Explorer policy' }
+  if ((Get-EmiExplorerPolicyState | ConvertTo-Json -Compress) -ne ($originalExplorerPolicy | ConvertTo-Json -Compress)) { throw 'Rollback changed Explorer policy' }
   Remove-Item -LiteralPath $unexpected -Recurse -Force
   & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'uninstall.ps1')
   if ($LASTEXITCODE -ne 0) { throw 'Uninstall failed' }
