@@ -8,7 +8,7 @@
 
 use anyhow::Context;
 use std::path::Path;
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use windows::Win32::System::RemoteDesktop::{
@@ -45,10 +45,18 @@ pub(crate) fn ensure_ui_running() -> anyhow::Result<bool> {
 }
 
 fn ui_running_in_session(session: u32) -> bool {
+    let Ok(agent) = std::env::current_exe() else {
+        return false;
+    };
+    let ui = agent.with_file_name(UI_EXE);
     let mut system = System::new();
-    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+    );
     system.processes().values().any(|process| {
-        if !process.name().eq_ignore_ascii_case(UI_EXE) {
+        if !process.name().eq_ignore_ascii_case(UI_EXE) || !executable_matches(process.exe(), &ui) {
             return false;
         }
         let mut process_session = 0;
@@ -56,6 +64,18 @@ fn ui_running_in_session(session: u32) -> bool {
         unsafe { ProcessIdToSessionId(process.pid().as_u32(), &raw mut process_session) }
             .is_ok_and(|()| process_session == session)
     })
+}
+
+fn executable_matches(candidate: Option<&Path>, expected: &Path) -> bool {
+    let Some(candidate) = candidate else {
+        return false;
+    };
+    let (Ok(candidate), Ok(expected)) = (candidate.canonicalize(), expected.canonicalize()) else {
+        return false;
+    };
+    candidate
+        .as_os_str()
+        .eq_ignore_ascii_case(expected.as_os_str())
 }
 
 fn launch_as_user(token: HANDLE) -> anyhow::Result<()> {
@@ -99,4 +119,27 @@ fn launch_as_user(token: HANDLE) -> anyhow::Result<()> {
         let _ = CloseHandle(process.hProcess);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_same_named_program_elsewhere_cannot_satisfy_ui_supervision() {
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join("installed");
+        let untrusted = root.path().join("untrusted");
+        std::fs::create_dir(&installed).unwrap();
+        std::fs::create_dir(&untrusted).unwrap();
+        let expected = installed.join(UI_EXE);
+        let impostor = untrusted.join(UI_EXE);
+        std::fs::write(&expected, b"trusted").unwrap();
+        std::fs::write(&impostor, b"untrusted").unwrap();
+        assert!(executable_matches(Some(&expected), &expected));
+        assert!(!executable_matches(Some(&impostor), &expected));
+        assert!(!executable_matches(None, &expected));
+        std::fs::remove_file(&expected).unwrap();
+        assert!(!executable_matches(Some(&expected), &expected));
+    }
 }

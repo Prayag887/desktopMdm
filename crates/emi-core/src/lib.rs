@@ -365,8 +365,8 @@ mod tests {
             "observed_at":"2026-09-16T10:00:00Z"
         }"#;
         let health = serde_json::from_str::<DeviceHealth>(json).expect("legacy health snapshot");
-        assert!(health.manufacturer.is_empty());
-        assert!(health.model.is_empty());
+        assert_eq!(health.manufacturer, "");
+        assert_eq!(health.model, "");
     }
 
     #[test]

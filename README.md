@@ -18,6 +18,8 @@ Payment and customer administration remain in the hosted admin product. BIOS pas
 
 For offline restoration after supported Windows resets, prepare a per-device local recovery package with `Provision-OfflineRecovery.ps1`. See [Offline reset recovery](docs/offline-reset-recovery.md) for ADK prerequisites, capture commands, state limitations, and required reset tests. Package creation alone does not confirm successful restoration; this option does not cover disk wipes or SSD replacement.
 
+For owner-controlled local deployment, use `Harden-LocalAccount.ps1` to remove the selected daily user's privileged memberships while preserving a verified owner administrator, and `Provision-OfflineBitLocker.ps1` to back up recovery keys to an owner USB drive before enabling encryption. See [Local device hardening](docs/local-device-hardening.md) for commands, firmware prerequisites and handoff checks.
+
 This repository provides the Windows agent and its administrator-controlled restriction state. It does **not** make a Windows program undeletable, survive a bare-metal disk image by itself, prevent an SSD owner from formatting the media, or enroll a device into a Microsoft tenant. Those outcomes require an organization-owned deployment stack:
 
 - Register the motherboard/device identity with Windows Autopilot, preferably through the OEM or reseller. Registration and an assigned deployment profile are prerequisites for organizational provisioning to return after Windows Setup or a supported reset.
@@ -133,9 +135,7 @@ interactive step; the Intune wrapper uses it for SYSTEM/session-0 deployment.
 
 ### Explorer context menus
 
-Starting with v0.6.47, installation sets the machine-wide `NoViewContextMenu` Explorer policy. Desktop and File Explorer right-click menus are disabled for all accounts, including administrators, after signing out and back in. The agent service, companion UI and login launch remain enabled. Keyboard shortcuts, toolbar actions and administrator access remain available; this policy does not prevent administrator deletion.
-
-The original policy value is stored privately in ProgramData and preserved across upgrades. Installation rollback restores the transaction's policy, and uninstall restores the original value unless an administrator or Group Policy has subsequently changed it to a different value.
+Releases v0.6.47 up to this one set the machine-wide `NoViewContextMenu` Explorer policy, disabling desktop and File Explorer right-click menus. Installation no longer sets it: upgrading restores the original value saved in ProgramData (sign out and back in to apply), unless an administrator or Group Policy has since changed it to a different value. Uninstall does the same.
 
 The signed Windows installer registers `RepairWatchdog.exe` as an automatic LocalSystem service (display name `RepairWatchdog`, stable service ID `EmiDeviceWatchdog`). It starts at every Windows boot without requiring login. Its authenticated repair backup is a folder at `C:\ProgramData\RepairWatchdog\<manifest-hash>`, not a second app. Installation prints the verified backup path. Unsigned development installs do not provide trusted automatic repair. Missing installation files can be restored while the watchdog and its protected backup remain available.
 

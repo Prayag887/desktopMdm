@@ -84,8 +84,9 @@ $registry = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine','Registry6
 try {
   $tree = $registry.OpenSubKey("$taskCache\Tree\EmiDeviceLockAll")
   if (-not $tree) { throw 'Companion task cache entry is missing.' }
-  try { $taskId = [string]$tree.GetValue('Id') } finally { $tree.Dispose() }
-  if ($taskId -notmatch '^\{[a-fA-F0-9-]{36}\}$') { throw 'Invalid companion task ID.' }
+  try { $rawTaskId = $tree.GetValue('Id') } finally { $tree.Dispose() }
+  . (Join-Path $InstallDir 'Recovery-TaskId.ps1')
+  $taskId = ConvertTo-EmiRecoveryTaskId $rawTaskId
   $patterns += ,@('Registry', "HKLM\$taskCache\Tree\EmiDeviceLockAll\* [*]")
   $patterns += ,@('Registry', "HKLM\$taskCache\Tasks\$taskId\* [*]")
   foreach ($bucket in @('Plain','Logon','Boot','Maintenance')) {

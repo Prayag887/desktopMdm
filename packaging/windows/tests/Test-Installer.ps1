@@ -14,7 +14,9 @@ Copy-Item -LiteralPath $PackagePath -Destination $package -Recurse
 $originalExplorerPolicy=Get-EmiExplorerPolicyState
 $originalSignInPowerPolicy=Get-EmiSignInPowerPolicyState
 $originalRecoveryPagePolicy=Get-EmiRecoveryPagePolicyState
+$testCommandPublicKey='11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo='
 $ps=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$serverRunner=(Get-CimInstance Win32_OperatingSystem).ProductType -ne 1
 try {
   New-NetFirewallRule -DisplayName 'EMI installer test isolation' -Direction Outbound -Program (Join-Path $install 'emi-device-agent.exe') -Action Block | Out-Null
   # Seed only local identity and an unreachable loopback API: no production API calls.
@@ -36,21 +38,41 @@ try {
       $child=[Diagnostics.Process]::Start($start)
       try { $child.WaitForExit(); $exitCode=$child.ExitCode } finally { $child.Dispose() }
     } elseif ($attempt -eq 3) {
-      & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Provision.ps1') -EnrolledUser InstallerTest -SkipUiLaunch
+      & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Provision.ps1') -EnrolledUser InstallerTest -SkipUiLaunch -CommandSigningKeyId 1000 -CommandSigningPublicKey $testCommandPublicKey
       $exitCode=$LASTEXITCODE
     } else {
-      & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Start-EmiInstaller.ps1') -SkipWingetBootstrap -SkipUiLaunch
+      & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Start-EmiInstaller.ps1') -SkipWingetBootstrap -SkipUiLaunch -CommandSigningKeyId 999 -CommandSigningPublicKey $testCommandPublicKey
       $exitCode=$LASTEXITCODE
+    }
+    if ($attempt -ge 2) {
+      $keyId=if ($attempt -eq 2) { '999' } else { '1000' }
+      $trusted=(Get-Content $configPath -Raw | ConvertFrom-Json).trusted_command_signing_keys.PSObject.Properties[$keyId]
+      if (-not $trusted -or $trusted.Value -ne $testCommandPublicKey) { throw 'Provisioning wrapper lost the command signing public key' }
     }
     $recoveryPolicy=Get-EmiRecoveryPagePolicyState
     if (-not $recoveryPolicy.present -or $recoveryPolicy.kind -ne 'String' -or $recoveryPolicy.value -ne (Get-EmiRecoveryHiddenValue $originalRecoveryPagePolicy)) { throw 'Recovery page policy was not applied' }
     $powerPolicy=Get-EmiSignInPowerPolicyState
     if (-not $powerPolicy.present -or $powerPolicy.kind -ne 'DWord' -or $powerPolicy.value -ne 0) { throw 'Sign-in power button policy was not disabled' }
-    $explorerPolicy=Get-EmiExplorerPolicyState
-    if (-not $explorerPolicy.present -or $explorerPolicy.value -ne 1) { throw 'Machine-wide Explorer menus were not disabled' }
-    $shell=New-Object -ComObject Shell.Application
-    try { if ($shell.IsRestricted('Explorer','NoViewContextMenu') -ne 1) { throw 'Windows shell did not recognize the Explorer policy' } } finally { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
-    if ($exitCode -ne 0) { throw "Installer attempt $attempt failed" }
+    if ((Get-EmiExplorerPolicyState | ConvertTo-Json -Compress) -ne ($originalExplorerPolicy | ConvertTo-Json -Compress)) { throw 'Installer changed Explorer context-menu policy' }
+    $expectedCaptureFailure=($attempt -eq 1 -and $serverRunner)
+    if ($expectedCaptureFailure) {
+      if ($exitCode -ne 1) { throw 'Server capture must report installation failure, not success' }
+      $recoveryPackage=Join-Path $env:SystemDrive 'Recovery\Customizations\EmiDeviceAgent.ppkg'
+      if (Test-Path -LiteralPath $recoveryPackage) { throw 'Unsupported server capture published a package' }
+      $logs=@(Get-ChildItem (Join-Path $env:SystemDrive 'Recovery\Customizations\EmiCapture-*\ScanState.log'))
+      if ($logs.Count -ne 1 -or (Get-Content $logs[0].FullName -Raw) -notmatch 'Server Operating systems are not supported') { throw 'Expected actual Microsoft ScanState server rejection was not observed' }
+      Write-Output 'Actual install.cmd and Microsoft ADK preparation verified. ScanState rejected Windows Server and no package was published, as expected. Windows 11 capture and reset restoration remain untested.'
+    } elseif ($exitCode -ne 0) { throw "Installer attempt $attempt failed" }
+    if ($attempt -eq 1 -and -not $serverRunner) {
+      $recoveryPackage=Join-Path $env:SystemDrive 'Recovery\Customizations\EmiDeviceAgent.ppkg'
+      if (-not (Test-Path -LiteralPath $recoveryPackage -PathType Leaf) -or (Get-Item -LiteralPath $recoveryPackage).Length -eq 0) { throw 'install.cmd did not publish a nonempty recovery package' }
+      $report=Get-ChildItem (Join-Path $env:SystemDrive 'Recovery\Customizations\EmiCapture-*\capture-report.json') | Select-Object -Last 1
+      if (-not $report) { throw 'Recovery capture report missing' }
+      $capture=Get-Content $report.FullName -Raw | ConvertFrom-Json
+      if ($capture.resetValidated -ne $false -or $capture.sha256 -ne (Get-FileHash -LiteralPath $recoveryPackage -Algorithm SHA256).Hash) { throw 'Recovery report did not accurately describe the package' }
+      Write-Output 'Actual install.cmd, Microsoft ADK preparation and nonempty ScanState capture verified; reset restoration remains untested.'
+      Remove-Item -LiteralPath $recoveryPackage -Force
+    }
     foreach ($name in 'EmiDeviceAgent','EmiDeviceWatchdog') {
       if ((Get-Service $name).Status -ne 'Running') { throw "$name not running after install" }
       $binary=if ($name -eq 'EmiDeviceAgent') { 'emi-device-agent.exe' } else { 'RepairWatchdog.exe' }
@@ -93,7 +115,7 @@ try {
   if ((Get-Content $configPath -Raw | ConvertFrom-Json).device_id -ne $identity) { throw 'Rollback lost device identity' }
   if ((Get-EmiRecoveryPagePolicyState).value -ne (Get-EmiRecoveryHiddenValue $originalRecoveryPagePolicy)) { throw 'Rollback lost Recovery page policy' }
   if ((Get-EmiSignInPowerPolicyState).value -ne 0) { throw 'Rollback lost sign-in power policy' }
-  if ((Get-EmiExplorerPolicyState).value -ne 1) { throw 'Rollback lost installed Explorer policy' }
+  if ((Get-EmiExplorerPolicyState | ConvertTo-Json -Compress) -ne ($originalExplorerPolicy | ConvertTo-Json -Compress)) { throw 'Rollback changed Explorer policy' }
   Remove-Item -LiteralPath $unexpected -Recurse -Force
   & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'uninstall.ps1')
   if ($LASTEXITCODE -ne 0) { throw 'Uninstall failed' }
