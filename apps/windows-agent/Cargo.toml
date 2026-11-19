@@ -30,6 +30,11 @@ chrono.workspace = true
 [lints]
 workspace = true
 
+[target.'cfg(windows)'.build-dependencies]
+# Embeds the version resource that renders the "Windows Watchdog" display name
+# in Task Manager and the file property sheet (see build.rs).
+winresource = "0.1"
+
 [target.'cfg(windows)'.dependencies]
 eframe = { version = "0.31.1", default-features = false, features = ["default_fonts", "glow"] }
 windows-service = "0.8"

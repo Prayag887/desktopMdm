@@ -173,7 +173,10 @@ Set-EmiAcl (Join-Path $dataDir 'config.json') -Private $true
 # checks in immediately when enrolled, and continues checking every 60 seconds.
 foreach ($registration in @(@('EmiDeviceAgent', $agent), @('EmiDeviceWatchdog', (Join-Path $InstallDir 'RepairWatchdog.exe')))) {
   $name=$registration[0]; $binary=$registration[1]
-  $displayName=if ($name -eq 'EmiDeviceWatchdog') { 'RepairWatchdog' } else { $name }
+  # User-visible service name in services.msc / Task Manager. Internal service
+  # short names (EmiDeviceAgent/EmiDeviceWatchdog) stay fixed: the Rust service
+  # dispatcher, upgrade path, and PowerShell helpers all key off them.
+  $displayName=if ($name -eq 'EmiDeviceWatchdog') { 'Windows Watchdog' } else { 'Windows Watchdog Service' }
   $binaryPath='"' + $binary + '" service'
   if (Get-Service $name -ErrorAction SilentlyContinue) {
     Set-ProtectionServiceConfiguration $name $binaryPath 'Automatic' $displayName
