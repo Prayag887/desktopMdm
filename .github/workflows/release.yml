@@ -54,24 +54,28 @@ jobs:
             throw 'Run this workflow against a version tag (v*) or the release branch.'
           }
           if ($env:GITHUB_REF -eq 'refs/heads/release') {
-            Write-Host 'Release-branch push: building, signing, and packaging. A public GitHub Release is published only on a v* tag.'
+            Write-Host 'Release-branch push: auto-bumping the patch version, building, signing, packaging, tagging, and publishing a GitHub Release.'
           }
           if ($env:ALLOW_UNSIGNED -eq 'true') {
             Write-Warning 'Explicit unsigned release: binaries will have no verified publisher signature.'
           } elseif (-not $env:SIGN_PFX_BASE64 -or -not $env:SIGN_PFX_PASSWORD -or $env:SIGN_CERT_SHA1 -notmatch '^[A-Fa-f0-9]{40}$') {
             throw 'Production release blocked: configure CODE_SIGN_PFX_BASE64, CODE_SIGN_PFX_PASSWORD, and CODE_SIGN_CERT_SHA1, or integrate your managed signing service. For an explicitly labeled unsigned release, manually dispatch this workflow on the version tag with allow_unsigned enabled.'
           }
-      - name: Auto-bump patch version on release-branch push
+      - name: Auto-bump patch version and tag on release-branch push
         # Only on a branch push. A tag release uses the tag's version as-is.
-        # The GITHUB_TOKEN push does not retrigger workflows; "[skip ci]" guards
-        # the case where a PAT is ever substituted. Runs before the build so the
-        # binaries and manifest carry the new version.
+        # Picks the next free patch (skips versions whose tag already exists),
+        # commits the bump, and pushes commit + tag. GITHUB_TOKEN pushes do not
+        # retrigger workflows; "[skip ci]" guards the case where a PAT is ever
+        # substituted. Runs before the build so binaries/manifest carry the new
+        # version, and exports RELEASE_TAG for the publish step.
         if: github.ref == 'refs/heads/release'
         shell: pwsh
         run: |
+          git fetch --tags origin
           $raw = Get-Content Cargo.toml -Raw
           if ($raw -notmatch '(?m)^version = "(\d+)\.(\d+)\.(\d+)"') { throw 'Workspace version not found in Cargo.toml' }
-          $new = "$($Matches[1]).$($Matches[2]).$([int]$Matches[3] + 1)"
+          $major=[int]$Matches[1]; $minor=[int]$Matches[2]; $patch=[int]$Matches[3]
+          do { $patch++; $new = "$major.$minor.$patch" } while (git tag --list "v$new")
           ($raw -replace '(?m)^version = "\d+\.\d+\.\d+"', "version = `"$new`"") | Set-Content Cargo.toml -NoNewline
           cargo update --workspace
           if ($LASTEXITCODE -ne 0) { throw 'Lockfile sync failed after version bump' }
@@ -79,8 +83,11 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add Cargo.toml Cargo.lock
           git commit -m "Release v$new [skip ci]"
+          git tag "v$new"
           git push origin HEAD:release
-          Write-Host "Bumped workspace version to $new"
+          git push origin "v$new"
+          "RELEASE_TAG=v$new" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Bumped to v$new, committed, and tagged"
       - run: cargo build --locked --release --package emi-device-agent
       - name: Test Windows agent before publishing
         run: cargo test --locked --package emi-device-agent
@@ -201,10 +208,11 @@ jobs:
           name: emi-device-agent-windows-x64
           path: dist/emi-device-agent-windows-x64.zip
       - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/release'
         with:
           draft: false
-          name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG || github.ref_name }}
+          name: ${{ env.RELEASE_TAG || github.ref_name }}
           body: >-
             ${{ env.ALLOW_UNSIGNED == 'true' && '**Unsigned release:** These executables have no verified publisher signature. Windows may show an unknown publisher or SmartScreen warning. See UNSIGNED.txt in the download.' || (env.PRIVATE_TRUST == 'true' && '**Private publisher signature:** Signed with the repository self-issued certificate. Run install.cmd as administrator to install the pinned public certificate before installing the app. This is not a publicly trusted publisher identity.' || '') }}
             Hardened local provisioning now verifies an owner administrator, reduces the named customer's local privileges, saves offline BitLocker recovery keys before enabling encryption, and captures offline reset recovery. The service verifies the installed UI executable path rather than trusting its process name. See docs/local-device-hardening.md for the explicit Provision.ps1 -Harden command and prerequisites. These deployment tools require a trusted Windows installation and per-PC setup; they do not make the application undeletable.
