@@ -1,6 +1,7 @@
 name: Windows desktop release
 on:
   push:
+    branches: [release]
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -49,8 +50,11 @@ jobs:
       - name: Validate release mode and signing identity
         shell: pwsh
         run: |
-          if ($env:GITHUB_REF -notlike 'refs/tags/v*') {
-            throw 'Run this workflow against a version tag (v*), not a branch.'
+          if ($env:GITHUB_REF -notlike 'refs/tags/v*' -and $env:GITHUB_REF -ne 'refs/heads/release') {
+            throw 'Run this workflow against a version tag (v*) or the release branch.'
+          }
+          if ($env:GITHUB_REF -eq 'refs/heads/release') {
+            Write-Host 'Release-branch push: building, signing, and packaging. A public GitHub Release is published only on a v* tag.'
           }
           if ($env:ALLOW_UNSIGNED -eq 'true') {
             Write-Warning 'Explicit unsigned release: binaries will have no verified publisher signature.'
@@ -177,6 +181,7 @@ jobs:
           name: emi-device-agent-windows-x64
           path: dist/emi-device-agent-windows-x64.zip
       - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           draft: false
           name: ${{ github.ref_name }}
