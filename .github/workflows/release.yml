@@ -61,6 +61,26 @@ jobs:
           } elseif (-not $env:SIGN_PFX_BASE64 -or -not $env:SIGN_PFX_PASSWORD -or $env:SIGN_CERT_SHA1 -notmatch '^[A-Fa-f0-9]{40}$') {
             throw 'Production release blocked: configure CODE_SIGN_PFX_BASE64, CODE_SIGN_PFX_PASSWORD, and CODE_SIGN_CERT_SHA1, or integrate your managed signing service. For an explicitly labeled unsigned release, manually dispatch this workflow on the version tag with allow_unsigned enabled.'
           }
+      - name: Auto-bump patch version on release-branch push
+        # Only on a branch push. A tag release uses the tag's version as-is.
+        # The GITHUB_TOKEN push does not retrigger workflows; "[skip ci]" guards
+        # the case where a PAT is ever substituted. Runs before the build so the
+        # binaries and manifest carry the new version.
+        if: github.ref == 'refs/heads/release'
+        shell: pwsh
+        run: |
+          $raw = Get-Content Cargo.toml -Raw
+          if ($raw -notmatch '(?m)^version = "(\d+)\.(\d+)\.(\d+)"') { throw 'Workspace version not found in Cargo.toml' }
+          $new = "$($Matches[1]).$($Matches[2]).$([int]$Matches[3] + 1)"
+          ($raw -replace '(?m)^version = "\d+\.\d+\.\d+"', "version = `"$new`"") | Set-Content Cargo.toml -NoNewline
+          cargo update --workspace
+          if ($LASTEXITCODE -ne 0) { throw 'Lockfile sync failed after version bump' }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock
+          git commit -m "Release v$new [skip ci]"
+          git push origin HEAD:release
+          Write-Host "Bumped workspace version to $new"
       - run: cargo build --locked --release --package emi-device-agent
       - name: Test Windows agent before publishing
         run: cargo test --locked --package emi-device-agent

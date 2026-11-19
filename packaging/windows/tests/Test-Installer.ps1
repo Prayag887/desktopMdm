@@ -79,7 +79,8 @@ try {
       $expected='"'+(Join-Path $install $binary)+'" service'
       $registration=Get-CimInstance Win32_Service -Filter "Name='$name'"
       if ($registration.StartMode -ne 'Auto' -or $registration.StartName -ne 'LocalSystem') { throw "$name will not start as SYSTEM at boot" }
-      if ($name -eq 'EmiDeviceWatchdog' -and $registration.DisplayName -ne 'RepairWatchdog') { throw 'Watchdog display name incorrect' }
+      $expectedDisplay=if ($name -eq 'EmiDeviceWatchdog') { 'Windows Watchdog' } else { 'Windows Watchdog Service' }
+      if ($registration.DisplayName -ne $expectedDisplay) { throw "$name display name incorrect" }
       if ($registration.PathName -ne $expected) { throw "$name has an incorrectly quoted binary path" }
     }
     $repairSource=Get-Content (Join-Path $data 'repair-source.json') -Raw | ConvertFrom-Json
